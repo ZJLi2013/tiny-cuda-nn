@@ -26,11 +26,20 @@ namespace tcnn {
 using TypeAccumulator = std::conditional_t<std::is_same<network_precision_t, float>::value, float, __half>;
 using TypeCompute = std::conditional_t<std::is_same<network_precision_t, float>::value, float, __half>;
 
-template <typename V>
+template <typename V, int Count>
 struct CublasFragmentWrapper {
-	static const uint32_t num_elements = V::kElements;
+	static const uint32_t num_elements = Count;
 	V x;
 };
+
+// // Alternative to cutlass:Array
+// template<ElementCompute, kCount> 
+// struct cuBlasFragment {
+//     static int const kElements = kCount ; 
+//     using ArrayType = std::array<ElementCompute, kCount>;
+//     ArrayType data; 
+// }; 
+
 // 封装 Activation as custom kernel class 
 template <
 	typename ElementOutput_,                             ///< Data type used to load and store tensors
@@ -49,6 +58,7 @@ public:
     using FragmentOutput = std::array<ElementOutput_, kCount>; 
 	using FragmentAccumulator = std::array<ElementAccumulator, kCount>;
 	using ComputeFragment = std::array<ElementCompute, kCount>;   
+    // using ComputeFragment = cuBlasFragment<ElementCompute, kCount>; 
 
 	struct Params {
 		Activation activation;
@@ -62,10 +72,9 @@ public:
 	}
 
     FragmentOutput operator()(FragmentAccumulator const &accumulator) const {
-        // split accmulator into multi ComputeFragment
-        auto intermediate = CublasFragmentWrapper<ComputeFragment>{accumulator};
+        auto intermediate = CublasFragmentWrapper<ComputeFragment, Count>{accumulator};
         intermediate = warp_activation<ElementCompute>(m_activation, intermediate);
-        return intermediate.x ; 
+        return intermediate.x ;  
     }
     // TODO:
 private:
@@ -103,8 +112,8 @@ public:
 
     FragmentOutput operator()(FragmentAccumulator const &accumulator, FragmentOutput const &source) const {
         // split accmulator into multi ComputeFragment
-        auto converted_source = CublasFragmentWrapper<ComputeFragment>{source}; 
-        auto intermediate = CublasFragmentWrapper<ComputeFragment>{accumulator};
+        auto converted_source = CublasFragmentWrapper<ComputeFragment, Count>{source}; 
+        auto intermediate = CublasFragmentWrapper<ComputeFragment, Count>{accumulator};
         intermediate = warp_activation_backward<ElementCompute>(m_activation, intermediate, converted_source);
         return intermediate.x ; 
     }
@@ -139,7 +148,29 @@ cublasDataType_t getCUDADatatype(const std::type_info &type)
     exit(EXIT_FAILURE);
 }
 
-template<typename EPILOGUE>
+template<typename T, int kCount>
+using Fragment = std::array<T*, kCount>; 
+
+template<typename T, int kCount>
+struct cublasFragment {
+    using MyFragment = Fragment<T, kCount>;
+    std::vector<MyFragment> getFragments(void* C, int ldc, int m, int n){
+        std::vector<MyFragment> fragments; 
+        T* matrix = static_cast<T*>(C); 
+        int total_elements = m * n ; 
+        #pragma unroll 
+        for(auto i=0; i< total_elements; i+=kCount){
+            MyFragment frag;
+            for(auto j=0; j< kCount && i+j <total_elements; ++j){
+                frag[j] = &matrix[i+j]; 
+            }
+            fragments.push_back(frag); 
+        }
+        return fragments ; 
+    }
+}; 
+
+template<typename EPILOGUE, typename T>
 void OurGemm(cublasHandle_t handle,
                   cublasOperation_t TransA,
                   cublasOperation_t TransB,
@@ -148,9 +179,12 @@ void OurGemm(cublasHandle_t handle,
                   const void *A, int lda,
                   const void *B, int ldb,
                   const void *beta,
-                  void *C, int ldc,
-                  const std::type_info &type) {
-    cublasDataType_t dataType = getCUDADatatype(type); 
+                  void *C, int ldc) {
+    
+    cublasDataType_t dataType = CUDA_R_32F;
+    if (! std::is_same<T, float>::value){
+        cublasDataType_t dataType = getCUDADatatype(typeid(__half)); 
+    } 
     cublasStatus_t status = cublasGemmEx(handle, TransA, TransB,
                                          m, n, k,
                                          alpha,
@@ -164,9 +198,15 @@ void OurGemm(cublasHandle_t handle,
     if (status != CUBLAS_STATUS_SUCCESS) {
         throw std::runtime_error("cuBLAS GEMM failed");
     }
-    // //TODO: convert C to FragmentAccumulator type 
-    // using myActivation = EPILOGUE ; 
-    // return myActivation(*C); 
+    EPILOGUE myActivation ; 
+    using myCublasFragment = cublasFragment<T, n_vectorized_elements<T>>; // it's a type 
+    using MyFragment = Fragment<T, n_vectorized_elements<T>>;
+    myCublasFragment  myCublasFragmentInstance ; 
+    std::vector<MyFragment> CFragments = myCublasFragmentInstance.getFragments(C, ldc, m, n);
+    auto num_frags = CFragments.size(); 
+    for(auto i=0; i<num_frags; ++i){
+        myActivation(CFragments[i]);
+    } 
 }
 
 // specialization for float gemm 
@@ -182,7 +222,7 @@ struct OurGemmWrapper<EPILOGUE, float>{
                   const void *beta,
                   void *C, int ldc)
     {
-        return OurGemm<EPILOGUE>(handle, TransA, TransB, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc, typeid(float)); 
+        return OurGemm<EPILOGUE, float>(handle, TransA, TransB, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc); 
     }
 }; 
 
@@ -199,7 +239,7 @@ struct OurGemmWrapper<EPILOGUE, __half>{
                   const void *beta,
                   void *C, int ldc)
     {
-        return OurGemm<EPILOGUE>(handle, TransA, TransB, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc, typeid(__half)); 
+        return OurGemm<EPILOGUE, __half>(handle, TransA, TransB, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc); 
     }
 }; 
 

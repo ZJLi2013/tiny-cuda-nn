@@ -28,7 +28,7 @@ set(SOURCES
 	common.cu
 	common_device.cu
 	cpp_api.cu
-	cutlass_mlp.cu
+	#cutlass_mlp.cu
 	encoding.cu
 	loss.cu
 	network.cu
@@ -46,5 +46,5 @@ endif()
 ###############################################################################
 
 add_library(tiny-cuda-nn STATIC ${SOURCES})
-target_link_libraries(tiny-cuda-nn PUBLIC ${CUDA_LIBRARIES} cuda cublas)
+target_link_libraries(tiny-cuda-nn PUBLIC ${CUDA_LIBRARIES} CUDA::cublas)
 target_compile_options(tiny-cuda-nn PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_NVCC_FLAGS}>)

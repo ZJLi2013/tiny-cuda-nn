@@ -225,7 +225,6 @@ endif()
 list(APPEND CUDA_NVCC_FLAGS "--extended-lambda")
 list(APPEND CUDA_NVCC_FLAGS "--expt-relaxed-constexpr")
 
-
 ###############################################################################
 # Dependencies
 ###############################################################################
@@ -240,7 +239,6 @@ add_subdirectory("dependencies/fmt")
 ###############################################################################
 # tiny-cuda-nn library, samples, and benchmarks
 ###############################################################################
-
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_BINARY_DIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL ${CMAKE_BINARY_DIR})
@@ -249,7 +247,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR})
 set(TCNN_SOURCES
 	src/common_host.cu
 	src/cpp_api.cu
-	src/cutlass_mlp.cu
+#	src/cutlass_mlp.cu
 	src/encoding.cu
 	src/loss.cu
 	src/network.cu
@@ -265,6 +263,16 @@ endif()
 ###############################################################################
 # Linker / library
 ###############################################################################
+# Set CUDA toolkit path manually (if needed)
+set(CUDA_TOOLKIT_ROOT_DIR "/usr/local/cuda")
+set(CUDA_INCLUDE_DIRS "${CUDA_TOOLKIT_ROOT_DIR}/include")
+
+find_package(CUDA REQUIRED)
+find_package(CUDAToolkit REQUIRED)
+# Specify the path to cuBLAS (optional if installed via system)
+# This should point to your CUDA installation directory
+set(CUBLAS_PATH "${CUDAToolkit_INCLUDE_DIRS}")
+
 
 add_library(tiny-cuda-nn STATIC ${TCNN_SOURCES})
 target_compile_definitions(tiny-cuda-nn PUBLIC ${TCNN_DEFINITIONS})
@@ -272,11 +280,12 @@ target_compile_options(tiny-cuda-nn PUBLIC $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_NVC
 target_include_directories(tiny-cuda-nn PUBLIC
 	"include"
 	"dependencies"
-	"dependencies/cutlass/include"
-	"dependencies/cutlass/tools/util/include"
+	# "dependencies/cutlass/include"
+	# "dependencies/cutlass/tools/util/include"
 	"dependencies/fmt/include"
+	${CUBLAS_PATH}
 )
-target_link_libraries(tiny-cuda-nn PUBLIC ${CUDA_LIBRARIES} ${TCNN_LIBRARIES} fmt)
+target_link_libraries(tiny-cuda-nn PUBLIC ${CUDA_LIBRARIES} CUDA::cublas ${TCNN_LIBRARIES} fmt)
 
 if (TCNN_BUILD_EXAMPLES)
 	add_subdirectory("samples")
