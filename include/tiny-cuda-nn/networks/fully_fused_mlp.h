@@ -34,6 +34,7 @@
 #include <tiny-cuda-nn/network.h>
 #include <tiny-cuda-nn/gpu_matrix.h>
 #include <tiny-cuda-nn/gpu_memory.h>
+#include <cublas_v2.h>
 
 #include <vector>
 
@@ -61,6 +62,9 @@ public:
 
 	void set_params_impl(T* params, T* inference_params, T* gradients) override;
 	void initialize_params(pcg32& rnd, float* params_full_precision, float scale = 1) override;
+
+	// initial cublas handle
+	cublasHandle_t handle ;
 
 	GPUMatrix<T, RM>& input_weight_matrix(bool inference) {
 		auto& weight_matrices = inference ? m_weight_matrices_inference : m_weight_matrices;

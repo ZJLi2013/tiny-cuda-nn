@@ -64,6 +64,8 @@ std::string select_network(const json& network) {
 		want_fully_fused_mlp = false;
 	}
 
+	// FIXME 
+	want_cutlass_mlp = false ;
 	if (want_fully_fused_mlp) {
 		return "FullyFusedMLP";
 	} else if (want_cutlass_mlp) {
@@ -89,9 +91,10 @@ uint32_t minimum_alignment(const json& network) {
 #else
 		throw std::runtime_error{"FullyFusedMLP was not compiled due to insufficient GPU arch of <=70."};
 #endif
-	} else {
-		return CutlassMLP<network_precision_t>::REQUIRED_ALIGNMENT();
-	}
+	} 
+	// else {
+	// 	return CutlassMLP<network_precision_t>::REQUIRED_ALIGNMENT();
+	// }
 }
 
 template <typename T>
@@ -123,16 +126,17 @@ Network<T>* create_network(const json& network) {
 			throw std::runtime_error{"FullyFusedMLP was not compiled due to insufficient GPU arch of <=70."};
 #endif //TCNN_MIN_GPU_ARCH > 70
 		}
-	} else if (equals_case_insensitive(network_type, "CutlassMLP")) {
-		return new CutlassMLP<T>{
-			network["n_input_dims"],
-			network.value("n_neurons", 128u),
-			network["n_output_dims"],
-			network.value("n_hidden_layers", 5u),
-			string_to_activation(network.value("activation", "ReLU")),
-			string_to_activation(network.value("output_activation", "None")),
-		};
 	}
+    // else if (equals_case_insensitive(network_type, "CutlassMLP")) {
+	// 	return new CutlassMLP<T>{
+	// 		network["n_input_dims"],
+	// 		network.value("n_neurons", 128u),
+	// 		network["n_output_dims"],
+	// 		network.value("n_hidden_layers", 5u),
+	// 		string_to_activation(network.value("activation", "ReLU")),
+	// 		string_to_activation(network.value("output_activation", "None")),
+	// 	};
+	// }
 
 	throw std::runtime_error{fmt::format("Invalid network type: {}", network_type)};
 }
@@ -142,7 +146,7 @@ template Network<network_precision_t>* create_network(const json& network);
 std::vector<std::string> builtin_networks() {
 	return {
 		"FullyFusedMLP",
-		"CutlassMLP",
+	// 	"CutlassMLP",
 	};
 }
 }
