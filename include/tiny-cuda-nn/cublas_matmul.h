@@ -415,20 +415,6 @@ void fc_multiply_split_k(cublasHandle_t handle, cudaStream_t stream, const GPUMa
 		throw std::runtime_error{"fc_multiply: Layout of GPUMatrixDynamic C and D must be equal"};
 	}
 
-    std::cout << "[DEBUG]: A.mn: " << A.m() << " , " << A.n() << \
-         " ; B.mn: " <<  B.m() << " , " << B.n()  << \
-         " ; C.mn: " <<  C.m() << " , " << C.n() << \
-         " ; D.mn: " << D.m()  << " , " << D.n() << \
-         " split_k: " << split_k_slices << std::endl ;
-
-    if(std::is_same<network_precision_t, __half>::value)
-    {
-        std::cout << "[DEBUG]: network_precision_t == __half" << std::endl ;
-    }else if (std::is_same<network_precision_t, float>::value)
-    {
-        std::cout << "[DEBUG]: network_precision_t == float" << std::endl ;
-    }
-
 	if (D.layout() == CM) {
 		fc_multiply_split_k<TypeA, LayoutA, TypeB, LayoutB, TypeC, CM, TypeD, CM>(handle, stream, A, B, C.cm(), D.cm(), split_k_slices, beta);
 	} else {        
