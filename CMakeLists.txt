@@ -21,6 +21,8 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 cmake_minimum_required(VERSION 3.18)
+set(CMAKE_CXX_FLAGS_DEBUG "-O0")
+set(CMAKE_CUDA_FLAGS_DEBUG "-O0")
 
 project(
 	tiny-cuda-nn

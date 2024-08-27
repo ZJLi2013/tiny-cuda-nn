@@ -152,8 +152,20 @@ int main(int argc, char* argv[]) {
 		}
 
 		// First step: load an image that we'd like to learn
-		int width, height;
-		GPUMemory<float> image = load_image(argv[1], width, height);
+		// int width, height;
+		// GPUMemory<float> image = load_image(argv[1], width, height);
+		/********************************  for benchmark purpose  *************************/ 
+		int width = 256;
+		int height = 256 ; 
+		GPUMemory<float> image(width * height * 4); 
+		std::srand(static_cast<unsigned>(std::time(0)));
+		float* host_data = new float[width * height];
+		for(int i=0; i< width * height; ++i){
+				host_data[i] = std::rand() % 100 ;  
+			}
+		}
+		image.copy_from_host(host_data);
+		std::cout << "create dummy data and fill in image on device done" << std::endl ; 
 
 		// Second step: create a cuda texture out of this image. It'll be used to generate training data efficiently on the fly
 		cudaResourceDesc resDesc;
@@ -186,10 +198,10 @@ int main(int argc, char* argv[]) {
 		// int sampling_width = 1024;
 		// int sampling_height = 1024;
 
-		uint32_t n_coords = sampling_width * sampling_height;
+		uint32_t n_coords = sampling_width * sampling_height;  // 3250, 4333 
 		uint32_t n_coords_padded = next_multiple(n_coords, BATCH_SIZE_GRANULARITY);
 
-		GPUMemory<float> sampled_image(n_coords * 3);
+		GPUMemory<float> sampled_image(n_coords * 3);  
 		GPUMemory<float> xs_and_ys(n_coords_padded * 2);
 
 		std::vector<float> host_xs_and_ys(n_coords * 2);
@@ -210,8 +222,8 @@ int main(int argc, char* argv[]) {
 		// Fourth step: train the model by sampling the above image and optimizing an error metric
 
 		// Various constants for the network and optimization
-		const uint32_t batch_size = 1 << 18;
-		const uint32_t n_training_steps = argc >= 4 ? atoi(argv[3]) : 10000000;
+		const uint32_t batch_size = 256 ;  // 1 << 18;
+		const uint32_t n_training_steps = argc >= 4 ? atoi(argv[3]) : 10;
 		const uint32_t n_input_dims = 2; // 2-D image coordinate
 		const uint32_t n_output_dims = 3; // RGB color
 
@@ -261,6 +273,7 @@ int main(int argc, char* argv[]) {
 
 			// Training step
 			{
+				std::cout << "[DEBUG] training step: " << i << std::endl ; 
 				auto ctx = trainer->training_step(training_stream, training_batch, training_target);
 
 				if (i % std::min(interval, (uint32_t)100) == 0) {

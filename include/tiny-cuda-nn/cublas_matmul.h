@@ -12,7 +12,6 @@
 #include <iostream> 
 #include <type_traits>
 
-
 namespace tcnn {
 
 #define Cublas_CHECK_THROW(status) \
@@ -138,7 +137,7 @@ using ActivationTransferOp = ActivationTransferEpilogue<T, n_vectorized_elements
 template<typename EPILOGUE, typename T>
 struct OurGemmWrapper; 
 
-cublasDataType_t getCUDADatatype(const std::type_info &type)
+cudaDataType_t getCUDADatatype(const std::type_info &type)
 {
     if (type == typeid(float)){
         return CUDA_R_32F ;
@@ -182,9 +181,9 @@ void OurGemm(cublasHandle_t handle,
                   const void *beta,
                   void *C, int ldc) {
     
-    cublasDataType_t dataType = CUDA_R_32F;
+    cudaDataType_t dataType = CUDA_R_32F;
     if (! std::is_same<T, float>::value){
-        cublasDataType_t dataType = getCUDADatatype(typeid(__half)); 
+        cudaDataType_t dataType = getCUDADatatype(typeid(__half)); 
     } 
     cublasStatus_t status = cublasGemmEx(handle, TransA, TransB,
                                          m, n, k,
@@ -248,17 +247,18 @@ template<typename T>
 void OurSplitGemm(cublasHandle_t handle,      
                   cublasOperation_t TransA,
                   cublasOperation_t TransB,
-                  int m, int n, int k,
-                  const void *alpha,
-                  const void *A, int lda,
-                  const void *B, int ldb,
-                  const void *beta,
-                  void *C, int ldc,
+                  const int m, const int n, const int k,
+                  const void* alpha,
+                  const T *A, int lda,
+                  const T *B, int ldb,
+                  const void* beta,
+                  T *C, int ldc,
                   int split_k_slices)
 {
-    cublasDataType_t dataType = CUDA_R_32F;
+    cudaDataType_t dataType = CUDA_R_32F;
     if (! std::is_same<T, float>::value){
-        cublasDataType_t dataType = getCUDADatatype(typeid(__half)); 
+        std::cout << "using __half dtype in OurSplitGemm" << std::endl ; 
+        cudaDataType_t dataType = getCUDADatatype(typeid(__half)); 
     } 
     if (split_k_slices == 1){
         cublasStatus_t status = cublasGemmEx(handle, TransA, TransB,
@@ -276,14 +276,13 @@ void OurSplitGemm(cublasHandle_t handle,
         }        
     }else{
         // Split-K GEMM implementation
-        auto beta = 1.0 ;  // for splitK case, need to accumulate C from each split to form final C matrix 
+        const T* B_slice;
+        const T* A_slice;   
+        int k_slice = k / split_k_slices;
         for (int slice = 0; slice < split_k_slices; ++slice) {
-            int k_slice = k / split_k_slices;
-            // access splitK sub matrix by A, B pointer
-            //TODO: Layout consider for sub-matrix access 
-            const dataType* A_slice = A + slice * k_slice;
-            const dataType* B_slice = B + slice * k_slice * ldb;
-            // dataType* C_partial = C.data() ;   // same size of C, but smaller values
+            //TODO: data access consider layout 
+            A_slice = static_cast<const T*>(A) + slice * k_slice ;
+            B_slice = static_cast<const T*>(B) + slice * k_slice * ldb;
             cublasStatus_t status = cublasGemmEx(handle, TransA, TransB,
                                                 m, n, k_slice,
                                                 alpha,
@@ -298,7 +297,7 @@ void OurSplitGemm(cublasHandle_t handle,
             } 
         }
     }
-}
+};
 
 template <typename TypeA, MatrixLayout LayoutA, typename TypeB, MatrixLayout LayoutB, typename TypeC, MatrixLayout LayoutC, typename TypeD, MatrixLayout LayoutD>
 void fc_multiply(cublasHandle_t &handle, cudaStream_t stream, const GPUMatrix<TypeA, LayoutA>& A, const GPUMatrix<TypeB, LayoutB>& B, const GPUMatrix<TypeC, LayoutC>& C, GPUMatrix<TypeD, LayoutD>& D, Activation act = Activation::None, bool transfer = false, bool sum_source = false) {
@@ -337,18 +336,10 @@ void fc_multiply(cublasHandle_t &handle, cudaStream_t stream, const GPUMatrix<Ty
     TypeA beta = sum_source ? 1.0f : 0.0f;
 
     if(transfer){
-        // runtime dispatch 
-        if (std::is_same<MatmulTypeAccumulator, float>::value){
-            OurGemmWrapper<ActivationTransferOp<MatmulTypeAccumulator>, float>::gemm(handle, TransA, TransB, M, N, K, &alpha, A.data(), lda, B.data(), ldb, &beta, C.data(), ldc);
-        }else{
-            OurGemmWrapper<ActivationTransferOp<MatmulTypeAccumulator>, __half>::gemm(handle, TransA, TransB, M, N, K, &alpha, A.data(), lda, B.data(), ldb, &beta, C.data(), ldc);
-        }
+        // // runtime dispatch 
+        OurGemmWrapper<ActivationTransferOp<MatmulTypeAccumulator>, network_precision_t>::gemm(handle, TransA, TransB, M, N, K, &alpha, A.data(), lda, B.data(), ldb, &beta, C.data(), ldc);
     }else{
-        if (std::is_same<MatmulTypeAccumulator, float>::value){        
-            OurGemmWrapper<ActivationOp<MatmulTypeAccumulator>, float>::gemm(handle, TransA, TransB, M, N, K, &alpha, A.data(), lda, B.data(), ldb, &beta, C.data(), ldc);
-        }else{
-            OurGemmWrapper<ActivationOp<MatmulTypeAccumulator>, __half>::gemm(handle, TransA, TransB, M, N, K, &alpha, A.data(), lda, B.data(), ldb, &beta, C.data(), ldc);
-        }
+        OurGemmWrapper<ActivationOp<MatmulTypeAccumulator>, network_precision_t>::gemm(handle, TransA, TransB, M, N, K, &alpha, A.data(), lda, B.data(), ldb, &beta, C.data(), ldc);
     }
 }
 
@@ -380,7 +371,7 @@ void fc_multiply(cublasHandle_t &handle, cudaStream_t stream, const GPUMatrix<Ty
 }
 
 template <typename TypeA, MatrixLayout LayoutA, typename TypeB, MatrixLayout LayoutB, typename TypeC, MatrixLayout LayoutC, typename TypeD, MatrixLayout LayoutD>
-void fc_multiply_split_k(cublasHandle_t handle, cudaStream_t stream, const GPUMatrix<TypeA, LayoutA>& A, const GPUMatrix<TypeB, LayoutB>& B, const GPUMatrix<TypeC, LayoutC>& C, GPUMatrix<TypeD, LayoutD>& D, int split_k_slices = 1, float beta = 0.0f) {
+void fc_multiply_split_k(cublasHandle_t handle, cudaStream_t stream, const GPUMatrix<TypeA, LayoutA>& A, const GPUMatrix<TypeB, LayoutB>& B, const GPUMatrix<TypeC, LayoutC>& C, const GPUMatrix<TypeD, LayoutD>& D, int split_k_slices = 1, float beta = 0.0f) {
     
     cublasOperation_t TransA = (LayoutA == MatrixLayout::RowMajor) ? CUBLAS_OP_T : CUBLAS_OP_N;
     cublasOperation_t TransB = (LayoutB == MatrixLayout::RowMajor) ? CUBLAS_OP_T : CUBLAS_OP_N;
@@ -413,12 +404,9 @@ void fc_multiply_split_k(cublasHandle_t handle, cudaStream_t stream, const GPUMa
     int ldc = (LayoutC == RM) ? N : M;
     // cublasSetStream(handle, stream);
     // TODO: need specify ComputeType and AccumulatorType 
-    if (std::is_same<MatmulTypeAccumulator, float>::value){
-        OurSplitGemm<float>(handle, TransA, TransB, M, N, K, &alpha, A.data(), lda, B.data(), ldb, &beta, C.data(), ldc); 
-    }
-    else{
-        OurSplitGemm<__half>(handle, TransA, TransB, M, N, K, &alpha, A.data(), lda, B.data(), ldb, &beta, C.data(), ldc); 
-    }
+    float alpha = 1.0 ; 
+    beta = 1.0 ;  // for splitK case, need to accumulate C from each split to form final C matrix 
+    OurSplitGemm<network_precision_t>(handle, TransA, TransB, M, N, K, &alpha, A.data(), lda, B.data(), ldb, &beta, C.data(), ldc, split_k_slices); 
 }
 
 template <typename TypeA, MatrixLayout LayoutA, typename TypeB, MatrixLayout LayoutB, typename TypeC, typename TypeD>
@@ -427,10 +415,24 @@ void fc_multiply_split_k(cublasHandle_t handle, cudaStream_t stream, const GPUMa
 		throw std::runtime_error{"fc_multiply: Layout of GPUMatrixDynamic C and D must be equal"};
 	}
 
+    std::cout << "[DEBUG]: A.mn: " << A.m() << " , " << A.n() << \
+         " ; B.mn: " <<  B.m() << " , " << B.n()  << \
+         " ; C.mn: " <<  C.m() << " , " << C.n() << \
+         " ; D.mn: " << D.m()  << " , " << D.n() << \
+         " split_k: " << split_k_slices << std::endl ;
+
+    if(std::is_same<network_precision_t, __half>::value)
+    {
+        std::cout << "[DEBUG]: network_precision_t == __half" << std::endl ;
+    }else if (std::is_same<network_precision_t, float>::value)
+    {
+        std::cout << "[DEBUG]: network_precision_t == float" << std::endl ;
+    }
+
 	if (D.layout() == CM) {
-		fc_multiply_split_k(handle, stream, A, B, C.cm(), D.cm(), split_k_slices, beta);
-	} else {
-		fc_multiply_split_k(handle, stream, A, B, C.rm(), D.rm(), split_k_slices, beta);
+		fc_multiply_split_k<TypeA, LayoutA, TypeB, LayoutB, TypeC, CM, TypeD, CM>(handle, stream, A, B, C.cm(), D.cm(), split_k_slices, beta);
+	} else {        
+		fc_multiply_split_k<TypeA, LayoutA, TypeB, LayoutB, TypeC, RM, TypeD, RM>(handle, stream, A, B, C.rm(), D.rm(), split_k_slices, beta);
 	}
 }
 
