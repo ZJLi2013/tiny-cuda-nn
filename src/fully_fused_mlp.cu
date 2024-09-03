@@ -36,6 +36,8 @@
 
 #include <mma.h>
 
+#include <tiny-cuda-nn/debug_config.h>
+
 namespace tcnn {
 
 
@@ -750,6 +752,12 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 	// Make sure our temporary buffers have the correct size for the given batch size
 	uint32_t batch_size = dL_doutput.n();
 
+#if DEBUG_MODE 
+	input.print_matrix("backward_impl_input.log");
+	output.print_matrix("backward_impl_output.log");
+	dL_doutput.print_matrix("backward_impl_dL_doutput.log");
+#endif 
+
 	// Use GPUMatrixBase::allocate_shared_memory to ensure the matrices occupy contiguous memory.
 	// (Needed in the fully-fused kernels.)
 	std::vector<GPUMatrix<T>> backward_tmp(num_forward_activations());
@@ -786,6 +794,19 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 	// Output layer
 	if (param_gradients_mode != GradientMode::Ignore) {
 		multi_streams.emplace_back(stream, 2);
+
+#if DEBUG_MODE 
+		auto forward_hidden_layer_3 = forward.hidden.at(tmp_idx).transposed(); 
+		forward_hidden_layer_3.print_matrix("backward_impl_forward_hidden_layer_3.log"); 
+		auto forward_hidden_layer_2 = forward.hidden.at(2).transposed(); 
+		forward_hidden_layer_2.print_matrix("backward_impl_forward_hidden_layer_2.log"); 
+		auto forward_hidden_layer_1 = forward.hidden.at(1).transposed(); 
+		forward_hidden_layer_1.print_matrix("backward_impl_forward_hidden_layer_1.log"); 
+ 	// FIXME: Uncaught exception: Matrix C has incorrect size 0x0 != 16x64
+		// auto output_gradient = std::move(output_gradient_matrix());
+		// output_gradient.print_matrix("backward_impl_output_gradient.log"); 
+#endif 
+
 		fc_multiply_split_k(handle, multi_streams.back().get(1), tmp_dL_doutput, forward.hidden.at(tmp_idx).transposed(), output_gradient_matrix(), split_k_factor, param_gradient_beta);
 	}
 

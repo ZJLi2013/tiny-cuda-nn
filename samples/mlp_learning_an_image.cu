@@ -161,8 +161,7 @@ int main(int argc, char* argv[]) {
 		std::srand(static_cast<unsigned>(std::time(0)));
 		float* host_data = new float[width * height];
 		for(int i=0; i< width * height; ++i){
-				host_data[i] = std::rand() % 100 ;  
-			}
+				host_data[i] = std::rand() % 100 ;  // generate rand integers 
 		}
 		image.copy_from_host(host_data);
 		std::cout << "create dummy data and fill in image on device done" << std::endl ; 

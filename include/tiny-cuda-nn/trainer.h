@@ -42,6 +42,8 @@
 
 #include <random>
 
+#include <tiny-cuda-nn/debug_config.h>
+
 namespace tcnn {
 
 template <typename T, typename PARAMS_T, typename COMPUTE_T=T>
@@ -178,6 +180,12 @@ public:
 		{
 			// Execute forward and backward in a CUDA graph for maximum performance.
 			auto capture_guard = m_graph.capture_guard(stream);
+#if DEBUG_MODE 
+			// TODO: disable cuda graph capture for print_matrix !
+			// auto capture_guard = m_graph.capture_guard(stream);
+			input.print_matrix("training_step_forward_input.log"); 
+			target.print_matrix("training_step_forward_target.log"); 
+#endif 
 			ctx = forward(stream, loss_scale, input, target, data_pdf, use_inference_params, dL_dinput, external_dL_dy);
 			backward(stream, *ctx, input, dL_dinput, use_inference_params, param_gradients_mode);
 		}

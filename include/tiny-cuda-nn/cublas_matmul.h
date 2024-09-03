@@ -297,6 +297,10 @@ void OurSplitGemm(cublasHandle_t handle,
             } 
         }
     }
+	A.print_matrix("splitKGemm_matrixA.log");
+	B.print_matrix("splitKGemm_matrixB.log");
+	C.print_matrix("splitKGemm_matrixC.log");
+	D.print_matrix("splitKGemm_matrixD.log");
 };
 
 template <typename TypeA, MatrixLayout LayoutA, typename TypeB, MatrixLayout LayoutB, typename TypeC, MatrixLayout LayoutC, typename TypeD, MatrixLayout LayoutD>

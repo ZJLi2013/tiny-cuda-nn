@@ -39,6 +39,10 @@
 #include <string>
 #include <vector>
 
+#include <iostream> 
+#include <fstream> 
+#include <filesystem> 
+
 namespace tcnn {
 
 template<typename T>
@@ -401,6 +405,38 @@ public:
 	GPUMatrix<T, CM> cm() const {
 		CHECK_THROW(m_layout == CM);
 		return GPUMatrix<T, CM>(data(), m(), n(), stride(), m_malloc_allocation, m_arena_allocation);
+	}
+
+	void print_matrix(const char* relative_log_path) const {
+		std::string root_dir = "/workspace/tiny-cuda-nn/matrix_logs/"; 
+		std::string path_string(relative_log_path)
+		std::string log_path = root_dir + path_string ; 
+		std::ofstream logFile(log_path, std::ios::app); 
+		std::cout << "Open " << log_path << " for dumping matrix " << std::endl;
+		T* cpu_data = new T[this->n_elements()];
+		cudaMemcpy(cpu_data, this->m_data, this->n_elements() * sizeof(T), cudaMemcpyDeviceToHost); 
+		if (logFile.is_open()){
+            logFile << "Open " << log_path << " for dumping matrix: [ " << this->m_rows << " , " << this->m_cols << " ]\n" << std::endl;
+			for(int i=0; i< this->m_rows ; ++i){
+				for(int j=0; j< this->m_cols; ++j){
+					if (std::is_same<T, float>::value){
+						std::cout << static_cast<float>(cpu_data[i * this->m_cols + j]) << "  " ;
+						logFile << static_cast<float>(cpu_data[i * this->m_cols + j] ) << "  " ;
+					}else if(std::is_same<T, __half>::value){
+						std::cout << __half2float( cpu_data[i * this->m_cols + j]) << "  " ;
+						logFile << __half2float(cpu_data[i * this->m_cols + j]) << "  " ;
+					}else{
+						std::cerr << "not supported data format in print matrix" << std::endl ; 
+					}
+				}
+				std::cout << "\n" << std::endl ; 
+				logFile << "\n" << std::endl ; 
+			}
+			logFile.close() ;
+		}else{
+			std::cerr << "Failed in printing matrix to file " << std::endl ;  
+		}
+		delete[] cpu_data ; 
 	}
 
 private:
