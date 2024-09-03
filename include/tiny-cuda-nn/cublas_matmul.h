@@ -255,12 +255,9 @@ void OurSplitGemm(cublasHandle_t handle,
                   T *C, int ldc,
                   int split_k_slices)
 {
-    cudaDataType_t dataType = CUDA_R_32F;
-    if (! std::is_same<T, float>::value){
-        std::cout << "using __half dtype in OurSplitGemm" << std::endl ; 
-        cudaDataType_t dataType = getCUDADatatype(typeid(__half)); 
-    } 
+    cudaDataType_t dataType = getCUDADatatype(typeid(network_precision_t));
     if (split_k_slices == 1){
+        std::cout << "[DEBUG: split_k_slices=1 for debug]" << std::endl ;
         cublasStatus_t status = cublasGemmEx(handle, TransA, TransB,
                                             m, n, k,
                                             alpha,
@@ -297,10 +294,6 @@ void OurSplitGemm(cublasHandle_t handle,
             } 
         }
     }
-	A.print_matrix("splitKGemm_matrixA.log");
-	B.print_matrix("splitKGemm_matrixB.log");
-	C.print_matrix("splitKGemm_matrixC.log");
-	D.print_matrix("splitKGemm_matrixD.log");
 };
 
 template <typename TypeA, MatrixLayout LayoutA, typename TypeB, MatrixLayout LayoutB, typename TypeC, MatrixLayout LayoutC, typename TypeD, MatrixLayout LayoutD>
@@ -332,9 +325,12 @@ void fc_multiply(cublasHandle_t &handle, cudaStream_t stream, const GPUMatrix<Ty
         throw std::runtime_error(fmt::format("Matrix D has incorrect size {}x{} != {}x{}", D.m(), D.n(), M, N));
     }
 
-    int lda = (LayoutA == RM) ? K : M;
-    int ldb = (LayoutB == RM) ? N : K;
-    int ldc = (LayoutC == RM) ? N : M;
+    // int lda = (LayoutA == RM) ? K : M;
+    // int ldb = (LayoutB == RM) ? N : K;
+    // int ldc = (LayoutC == RM) ? N : M;
+    int lda = M ;
+    int ldb = K ;
+    int ldc = M ; 
 
     TypeA alpha = 1.0f;
     TypeA beta = sum_source ? 1.0f : 0.0f;
@@ -403,14 +399,18 @@ void fc_multiply_split_k(cublasHandle_t handle, cudaStream_t stream, const GPUMa
         throw std::runtime_error(fmt::format("Matrix D has incorrect size {}x{} != {}x{}", D.m(), D.n(), M, N));
     }
 
-    int lda = (LayoutA == RM) ? K : M;
-    int ldb = (LayoutB == RM) ? N : K;
-    int ldc = (LayoutC == RM) ? N : M;
+    // int lda = (LayoutA == RM) ? K : M;
+    // int ldb = (LayoutB == RM) ? N : K;
+    // int ldc = (LayoutC == RM) ? N : M;
+    // A(m, k), B(k, n), C(m, n) , leadning-dim only relate to physical memory layout, no matter T or N 
+    int lda = M ; 
+    int ldb = K / split_k_slices;
+    int ldc = M ; 
     // cublasSetStream(handle, stream);
     // TODO: need specify ComputeType and AccumulatorType 
-    float alpha = 1.0 ; 
-    beta = 1.0 ;  // for splitK case, need to accumulate C from each split to form final C matrix 
-    OurSplitGemm<network_precision_t>(handle, TransA, TransB, M, N, K, &alpha, A.data(), lda, B.data(), ldb, &beta, C.data(), ldc, split_k_slices); 
+    network_precision_t alpha = __float2half(1.0) ; 
+    network_precision_t half_beta = __float2half(1.0) ;  // for splitK case, need to accumulate C from each split to form final C matrix 
+    OurSplitGemm<network_precision_t>(handle, TransA, TransB, M, N, K, &alpha, A.data(), lda, B.data(), ldb, &half_beta, C.data(), ldc, split_k_slices); 
 }
 
 template <typename TypeA, MatrixLayout LayoutA, typename TypeB, MatrixLayout LayoutB, typename TypeC, typename TypeD>
