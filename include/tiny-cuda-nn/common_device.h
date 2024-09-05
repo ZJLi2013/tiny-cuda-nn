@@ -106,7 +106,7 @@ __host__ __device__ void activation_kernel(Activation activation, fragment_t* fr
 	int idx = blockIdx.x * blockDim.x + threadIdx.x ; 
 	int matrix_idx = idx * kCount ; // start idx of current thread 
 	if(matrix_idx < m * n && matrix_idx + kCount < m * n ){
-		swtich(activation){
+		switch(activation){
 			case Activation::ReLu: 
 				TCNN_PRAGMA_UNROLL
 				for(int t=0; t<kCount ; ++t){
