@@ -99,6 +99,79 @@ inline __host__ __device__ half relu(half val) {
 
 static constexpr float K_ACT = 10.0f;
 
+// add activation_kernel for cublass (Sep-05)
+template <typename T, typename fragment_t, int kCount>
+__host__ __device__ void activation_kernel(Activation activation, fragment_t* frag, fragment_t* result,  int m, int n)
+{
+	int idx = blockIdx.x * blockDim.x + threadIdx.x ; 
+	int matrix_idx = idx * kCount ; // start idx of current thread 
+	if(matrix_idx < m * n && matrix_idx + kCount < m * n ){
+		swtich(activation){
+			case Activation::ReLu: 
+				TCNN_PRAGMA_UNROLL
+				for(int t=0; t<kCount ; ++t){
+					result[idx].x[t] = relu((T)frag[idx].x[t]); 		
+				}
+				return; 
+			case Activation::LeakyReLU:
+				TCNN_PRAGMA_UNROLL
+				for(int t=0; t<kCount ; ++t){
+					result[idx].x[t] = frag[idx].x[t] * (T)((T)frag[idx].x[t] > (T)0.0f ? 1.0f : 0.01f); 		
+				}
+				return; 				
+			case Activation::Exponential:
+				TCNN_PRAGMA_UNROLL
+				for (int t=0; t < kCount; t++) {
+					result[idx].x[t] = (T)(expf((float)frag[idx].x[t]));
+				}
+				return;
+			case Activation::Sine:
+				TCNN_PRAGMA_UNROLL
+				for (int t=0; t < kCount; t++) {
+					result[idx].x[t] = (T)(sinf((float)frag[idx].x[t]));
+				}
+				return;
+			case Activation::Sigmoid:
+				TCNN_PRAGMA_UNROLL
+				for (int t=0; t < kCount; t++) {
+					result[idx].x[t] = (T)(logistic((float)frag[idx].x[t]));
+				}
+				return;
+			case Activation::Squareplus:
+				TCNN_PRAGMA_UNROLL
+				for (int t=0; t < kCount; t++) {
+					float x = (float)frag[idx].x[t] * K_ACT;
+					result[idx].x[t] = (T)(0.5f * (x + sqrtf(x * x + 4)) / K_ACT);
+				}
+				return;
+			case Activation::Softplus:
+				TCNN_PRAGMA_UNROLL
+				for (int t=0; t < kCount; t++) {
+					result[idx].x[t] = (T)(logf(expf((float)frag[idx].x[t] * K_ACT) + 1.0f) / K_ACT);
+				}
+				return;
+			case Activation::Tanh:
+				TCNN_PRAGMA_UNROLL
+				for (int t=0; t < kCount; t++) {
+					result[idx].x[t] = (T)(tanhf((float)frag[idx].x[t]));
+				}
+				return;
+			case Activation::None: result = frag; return;
+			default:
+				// Unsupported activation
+				// assert(false); // Commented out due to isolated strange side-effects on Windows
+				return;			
+		}
+	}
+}
+
+template <typename T, typename fragment_t, int kCount>
+__host__ __device__ void activation_kernel(Activation activation, fragment_t* frag, int m, int n)
+{
+	fragment_t* result = frag ; 
+	activation_kernel(activation, frag, result, m, n);
+}
+
 template <typename T, typename fragment_t>
 __host__ __device__ void warp_activation(Activation activation, const fragment_t& frag, fragment_t& result) {
 	switch (activation) {
@@ -235,6 +308,78 @@ __host__ __device__ fragment_t warp_activation_backward_in(Activation activation
 	fragment_t result;
 	warp_activation_backward_in<T>(activation, frag, forward_frag_in, result);
 	return result;
+}
+
+// add activation_backward_kernel for cublass (Sep-05)
+template <typename T, typename fragment_t, int kCount>
+__host__ __device__ void activation_backward_kernel(Activation activation, fragment_t* frag, fragment_t* forward_frag, fragment_t* result, int m, int n)
+{
+	int idx = blockIdx.x * blockDim.x + threadIdx.x ; 
+	int matrix_idx = idx * kCount ; // start idx of current thread 
+	if(matrix_idx < m * n && matrix_idx + kCount < m * n ){
+		switch (activation) {
+			case Activation::ReLU:
+				TCNN_PRAGMA_UNROLL
+				for (int t=0; t < kCount; t++) {
+					result[idx].x[t] = frag[idx].x[t] * (T)(forward_frag[idx].x[t] > (T)0.0f);
+				}
+				return;
+			case Activation::LeakyReLU:
+				TCNN_PRAGMA_UNROLL
+				for (int t=0; t < kCount; t++) {
+					result[idx].x[t] = frag[idx].x[t] * (T)(forward_frag[idx].x[t] > (T)0.0f ? 1.0f : 0.01f);
+				}
+				return;
+			case Activation::Exponential:
+				TCNN_PRAGMA_UNROLL
+				for (int t=0; t < kCount; t++) {
+					result[idx].x[t] = frag[idx].x[t] * forward_frag[idx].x[t];
+				}
+				return;
+			case Activation::Sine:
+				// Sine requires stored pre-activations, which we don't have. We only
+				// write out the post-activations.
+				// assert(false); // Commented out due to isolated strange side-effects on Windows
+				return;
+			case Activation::Sigmoid:
+				TCNN_PRAGMA_UNROLL
+				for (int t=0; t < kCount; t++) {
+					result[idx].x[t] = frag[idx].x[t] * (T)(forward_frag[idx].x[t] * (T)(1.0f - (float)forward_frag[idx].x[t]));
+				}
+				return;
+			case Activation::Squareplus:
+				TCNN_PRAGMA_UNROLL
+				for (int t=0; t < kCount; t++) {
+					float y = (float)forward_frag[idx].x[t] * K_ACT;
+					result[idx].x[t] = frag[idx].x[t] * (T)(y * y / (y * y + 1));
+				}
+				return;
+			case Activation::Softplus:
+				TCNN_PRAGMA_UNROLL
+				for (int t=0; t < kCount; t++) {
+					result[idx].x[t] = frag[idx].x[t] * (T)(1.0f - expf(-(float)forward_frag[idx].x[t] * K_ACT));
+				}
+				return;
+			case Activation::Tanh:
+				TCNN_PRAGMA_UNROLL
+				for (int t=0; t < kCount; t++) {
+					result[idx].x[t] = frag[idx].x[t] * (T)(1.0f - ((float)forward_frag[idx].x[t] * (float)forward_frag[idx].x[t]));
+				}
+				return;
+			case Activation::None: result = frag; return;
+			default:
+				// Unsupported activation
+				// assert(false); // Commented out due to isolated strange side-effects on Windows
+				return;
+		}		
+	}
+}
+
+template <typename T, typename fragment_t, int kCount>
+__host__ __device__ void activation_backward_kernel(Activation activation, fragment_t* frag, fragment_t* forward_frag, int m, int n)
+{
+	fragment_t* result = frag ; 
+	activation_backward_kernel(activation, frag, forward_frag, result, m, n);
 }
 
 template <typename T, typename fragment_t, typename forward_fragment_t>

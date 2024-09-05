@@ -408,8 +408,8 @@ public:
 	}
 
 	void print_matrix(const char* relative_log_path) const {
-		std::string root_dir = "/workspace/tiny-cuda-nn/matrix_logs/"; 
-		std::string path_string(relative_log_path)
+		std::string root_dir = "/workspace/tiny-rocm-nn/matrix_logs/"; 
+		std::string path_string(relative_log_path);
 		std::string log_path = root_dir + path_string ; 
 		std::ofstream logFile(log_path, std::ios::app); 
 		std::cout << "Open " << log_path << " for dumping matrix " << std::endl;

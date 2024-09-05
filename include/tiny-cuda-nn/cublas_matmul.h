@@ -28,18 +28,39 @@ using TypeCompute = std::conditional_t<std::is_same<network_precision_t, float>:
 template <typename V, int Count>
 struct CublasFragmentWrapper {
 	static const uint32_t num_elements = Count;
-	V x;
+	V x[Count];
 };
 
-// // Alternative to cutlass:Array
-// template<ElementCompute, kCount> 
-// struct cuBlasFragment {
-//     static int const kElements = kCount ; 
-//     using ArrayType = std::array<ElementCompute, kCount>;
-//     ArrayType data; 
-// }; 
+template<typename ElementAccumulator, typename MyFragment, int kCount>
+__global__ void create_fragments(ElementAccumulator* matrixC,  MyFragment* d_fragments, int m, int n){
+    int idx = blockIdx.x * blockDim.x + threadIdx.x ;
+    int offset = idx * kCount ;
+    if(offset < m *n){
+        TCNN_PRAGMA_UNROLL
+        for(int i=0; i<kCount ; ++i){
+            int element_idx = offset + i ;
+            if(element_idx < m*n){
+                d_fragments[idx].x[i] = matrixC[element_idx]; 
+            }
+        }
+    }
+}
 
-// 封装 Activation as custom kernel class 
+template<typename ElementAccumulator, typename MyFragment, int kCount>
+__global__ void merge_fragments(MyFragment* d_fragments, ElementAccumulator* matrixC,  int m, int n){
+    int idx = blockIdx.x * blockDim.x + threadIdx.x ;
+    int offset = idx * kCount ;
+    if(offset < m *n ){
+        TCNN_PRAGMA_UNROLL
+        for(int i=0; i<kCount; ++i){
+            int element_idx = offset + i ;
+            if( element_idx < m*n){
+                matrixC[element_idx] = d_fragments[idx].x[i]; 
+            }
+        }
+    }       
+}
+
 template <
 	typename ElementOutput_,                             ///< Data type used to load and store tensors
 	int Count,                                           ///< Number of elements computed per operation
@@ -51,34 +72,40 @@ public:
 	using ElementOutput = ElementOutput_;
 	using ElementAccumulator = ElementAccumulator_;
 	using ElementCompute = ElementCompute_;
-
     static int const kCount = Count ; 
-
-    using FragmentOutput = std::array<ElementOutput_, kCount>; 
-	using FragmentAccumulator = std::array<ElementAccumulator, kCount>;
-	using ComputeFragment = std::array<ElementCompute, kCount>;   
-    // using ComputeFragment = cuBlasFragment<ElementCompute, kCount>; 
-
 	struct Params {
 		Activation activation;
 		bool sum_source;
 	};
 public:
 	ActivationEpilogue(Params const &params) : m_activation{params.activation}, m_sum_source{params.sum_source} { }
-
 	bool is_source_needed() const {
 		return m_sum_source;
 	}
+    using MyFragment = CublasFragmentWrapper<ElementAccumulator, kCount> ;
+    ElementOutput operator()(ElementAccumulator* accumulator, ElementOutput* source, int m, int n) const {
+            int threads_per_block = 256 ;
+            int total_threads = ( m *n + kCount - 1) / kCount; 
+            int blocks = (total_threads + thrads_per_block -1) / threads_per_block ;
+            // Temp Solution 
+            myFrag* d_fragments ; 
+            int num_fragments =  ( m *n + kCount - 1) / kCount; 
+            cudaMalloc(&d_fragments, num_fragments * sizeof(myFrag));
+            create_fragments<ElementAccumulator, MyFragment, kCount>(accumulator, d_fragments, m, n); 
+            activation_kernel<T, myFrag, kCount><<<blocks, threads_per_block>>>(m_activation, d_fragments, m, n); 
+            cudaStreamSynchrnize(); 
+            merge_fragments<ElementAccumulator, MyFragment, kCount>(d_fragments, accumulator, m, n);
+            cudaFree(d_fragments);
+    } 
 
-    FragmentOutput operator()(FragmentAccumulator const &accumulator) const {
-        auto intermediate = CublasFragmentWrapper<ComputeFragment, Count>{accumulator};
-        intermediate = warp_activation<ElementCompute>(m_activation, intermediate);
-        return intermediate.x ;  
-    }
-    // TODO:
+    ElementOutput operator()(ElementAccumulator* accumulator, int m, int n) const {
+        operator()(accumulator, accumulator, m, n); 
+    } 
+
 private:
 	Activation m_activation;
 	bool m_sum_source;
+
 }; 
 
 template <
@@ -109,13 +136,31 @@ public:
 		return true;
 	}
 
-    FragmentOutput operator()(FragmentAccumulator const &accumulator, FragmentOutput const &source) const {
-        // split accmulator into multi ComputeFragment
-        auto converted_source = CublasFragmentWrapper<ComputeFragment, Count>{source}; 
-        auto intermediate = CublasFragmentWrapper<ComputeFragment, Count>{accumulator};
-        intermediate = warp_activation_backward<ElementCompute>(m_activation, intermediate, converted_source);
-        return intermediate.x ; 
+    using MyFragment = CublasFragmentWrapper<ElementAccumulator, kCount> ;
+    /*
+        accumulator :: dL/da at each layer during backward pass  
+        source :: input for activation_Op at each layer during forward pass 
+        TODO: what's and how accumulator, source passed into this epilogue after cublas::gemm done ?
+    */
+    ElementOutput operator()(ElementAccumulator* accumulator, ElementOutput* source, int m, int n) const {
+            int threads_per_block = 256 ;
+            int total_threads = ( m *n + kCount - 1) / kCount; 
+            int blocks = (total_threads + thrads_per_block -1) / threads_per_block ;
+            // Temp Solution 
+            myFrag* d_fragments ; 
+            int num_fragments =  ( m *n + kCount - 1) / kCount; 
+            cudaMalloc(&d_fragments, num_fragments * sizeof(myFrag));
+            create_fragments<ElementAccumulator, MyFragment, kCount>(accumulator, d_fragments, m, n); 
+            activation_backward_kernel<T, myFrag, kCount><<<blocks, threads_per_block>>>(m_activation, d_fragments, m, n); 
+            cudaStreamSynchrnize(); 
+            merge_fragments<ElementAccumulator, MyFragment, kCount>(d_fragments, accumulator, m, n);
+            cudaFree(d_fragments);
+    }    
+
+    ElementOutput operator()(ElementAccumulator* accumulator, int m , int n ){
+        std::cout << "NOT Implement 2" << std::endl; 
     }
+
 private:
 	Activation m_activation;
 	bool m_sum_source;
@@ -148,27 +193,9 @@ cudaDataType_t getCUDADatatype(const std::type_info &type)
     exit(EXIT_FAILURE);
 }
 
-template<typename T, int kCount>
-using Fragment = std::array<T*, kCount>; 
-
-template<typename T, int kCount>
-struct cublasFragment {
-    using MyFragment = Fragment<T, kCount>;
-    std::vector<MyFragment> getFragments(void* C, int ldc, int m, int n){
-        std::vector<MyFragment> fragments; 
-        T* matrix = static_cast<T*>(C); 
-        int total_elements = m * n ; 
-        #pragma unroll 
-        for(auto i=0; i< total_elements; i+=kCount){
-            MyFragment frag;
-            for(auto j=0; j< kCount && i+j <total_elements; ++j){
-                frag[j] = &matrix[i+j]; 
-            }
-            fragments.push_back(frag); 
-        }
-        return fragments ; 
-    }
-}; 
+// minic cutlass::epilogue
+// as cutlass::epilogue op is smoothly using previous GEMM grid/block/warps mapping.
+// basically the fragment memory operated by the warp and threads in the warp can directly used for epilogue op again.
 
 template<typename EPILOGUE, typename T>
 void OurGemm(cublasHandle_t handle,
@@ -198,15 +225,11 @@ void OurGemm(cublasHandle_t handle,
     if (status != CUBLAS_STATUS_SUCCESS) {
         throw std::runtime_error("cuBLAS GEMM failed");
     }
+    
+    // do activation op on matrix C 
     EPILOGUE myActivation ; 
-    using myCublasFragment = cublasFragment<T, n_vectorized_elements<T>>; // it's a type 
-    using MyFragment = Fragment<T, n_vectorized_elements<T>>;
-    myCublasFragment  myCublasFragmentInstance ; 
-    std::vector<MyFragment> CFragments = myCublasFragmentInstance.getFragments(C, ldc, m, n);
-    auto num_frags = CFragments.size(); 
-    for(auto i=0; i<num_frags; ++i){
-        myActivation(CFragments[i]);
-    } 
+    myActivation(C, m, n); 
+    std::cout << "[DEBUG]: done activation after gemm op" << std::endl; 
 }
 
 // specialization for float OurGemm 
@@ -257,7 +280,7 @@ void OurSplitGemm(cublasHandle_t handle,
 {
     cudaDataType_t dataType = getCUDADatatype(typeid(network_precision_t));
     if (split_k_slices == 1){
-        std::cout << "[DEBUG: split_k_slices=1 for debug]" << std::endl ;
+        // std::cout << "[DEBUG: split_k_slices=1 for debug]" << std::endl ;
         cublasStatus_t status = cublasGemmEx(handle, TransA, TransB,
                                             m, n, k,
                                             alpha,
@@ -332,13 +355,13 @@ void fc_multiply(cublasHandle_t &handle, cudaStream_t stream, const GPUMatrix<Ty
     int ldb = K ;
     int ldc = M ; 
 
-    TypeA alpha = 1.0f;
-    TypeA beta = sum_source ? 1.0f : 0.0f;
+    network_precision_t alpha = 1.0f;
+    network_precision_t beta = sum_source ? 1.0f : 0.0f;
 
     if(transfer){
-        // // runtime dispatch 
         OurGemmWrapper<ActivationTransferOp<MatmulTypeAccumulator>, network_precision_t>::gemm(handle, TransA, TransB, M, N, K, &alpha, A.data(), lda, B.data(), ldb, &beta, C.data(), ldc);
     }else{
+        // TODO: sum_source op before epilogue  
         OurGemmWrapper<ActivationOp<MatmulTypeAccumulator>, network_precision_t>::gemm(handle, TransA, TransB, M, N, K, &alpha, A.data(), lda, B.data(), ldb, &beta, C.data(), ldc);
     }
 }
