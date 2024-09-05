@@ -795,17 +795,17 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 	if (param_gradients_mode != GradientMode::Ignore) {
 		multi_streams.emplace_back(stream, 2);
 
-#if DEBUG_MODE 
-		auto forward_hidden_layer_3 = forward.hidden.at(tmp_idx).transposed(); 
-		forward_hidden_layer_3.print_matrix("backward_impl_forward_hidden_layer_3.log"); 
-		auto forward_hidden_layer_2 = forward.hidden.at(2).transposed(); 
-		forward_hidden_layer_2.print_matrix("backward_impl_forward_hidden_layer_2.log"); 
-		auto forward_hidden_layer_1 = forward.hidden.at(1).transposed(); 
-		forward_hidden_layer_1.print_matrix("backward_impl_forward_hidden_layer_1.log"); 
- 	// FIXME: Uncaught exception: Matrix C has incorrect size 0x0 != 16x64
-		// auto output_gradient = std::move(output_gradient_matrix());
-		// output_gradient.print_matrix("backward_impl_output_gradient.log"); 
-#endif 
+// #if DEBUG_MODE 
+// 		auto forward_hidden_layer_3 = forward.hidden.at(tmp_idx).transposed(); 
+// 		forward_hidden_layer_3.print_matrix("backward_impl_forward_hidden_layer_3.log"); 
+// 		auto forward_hidden_layer_2 = forward.hidden.at(2).transposed(); 
+// 		forward_hidden_layer_2.print_matrix("backward_impl_forward_hidden_layer_2.log"); 
+// 		auto forward_hidden_layer_1 = forward.hidden.at(1).transposed(); 
+// 		forward_hidden_layer_1.print_matrix("backward_impl_forward_hidden_layer_1.log"); 
+//  	// FIXME: Uncaught exception: Matrix C has incorrect size 0x0 != 16x64
+// 		// auto output_gradient = std::move(output_gradient_matrix());
+// 		// output_gradient.print_matrix("backward_impl_output_gradient.log"); 
+// #endif 
 
 		fc_multiply_split_k(handle, multi_streams.back().get(1), tmp_dL_doutput, forward.hidden.at(tmp_idx).transposed(), output_gradient_matrix(), split_k_factor, param_gradient_beta);
 	}

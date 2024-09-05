@@ -12,6 +12,8 @@
 #include <iostream> 
 #include <type_traits>
 
+#include <tiny-cuda-nn/debug_config.h> // for cublas matrix print 
+
 namespace tcnn {
 
 #define Cublas_CHECK_THROW(status) \
@@ -83,7 +85,7 @@ public:
 		return m_sum_source;
 	}
     using MyFragment = CublasFragmentWrapper<ElementAccumulator, kCount> ;
-    ElementOutput operator()(ElementAccumulator* accumulator, ElementOutput* source, int m, int n) const {
+    ElementOutput operator()(ElementAccumulator* accumulator, int m, int n) const {
             int threads_per_block = 256 ;
             int total_threads = ( m *n + kCount - 1) / kCount; 
             int blocks = (total_threads + thrads_per_block -1) / threads_per_block ;
@@ -98,8 +100,8 @@ public:
             cudaFree(d_fragments);
     } 
 
-    ElementOutput operator()(ElementAccumulator* accumulator, int m, int n) const {
-        operator()(accumulator, accumulator, m, n); 
+    ElementOutput operator()(ElementAccumulator* accumulator, ElementOutput* source,  int m, int n) const {
+        std::cout << "NOT Implement in ActivationEpilogue" << std::endl ;
     } 
 
 private:
@@ -147,14 +149,19 @@ public:
             int total_threads = ( m *n + kCount - 1) / kCount; 
             int blocks = (total_threads + thrads_per_block -1) / threads_per_block ;
             // Temp Solution 
-            myFrag* d_fragments ; 
+            myFrag* a_fragments ; 
+            myFrag* s_fragments; 
             int num_fragments =  ( m *n + kCount - 1) / kCount; 
-            cudaMalloc(&d_fragments, num_fragments * sizeof(myFrag));
-            create_fragments<ElementAccumulator, MyFragment, kCount>(accumulator, d_fragments, m, n); 
-            activation_backward_kernel<T, myFrag, kCount><<<blocks, threads_per_block>>>(m_activation, d_fragments, m, n); 
+            CUDA_CHECK_THROW(cudaMalloc(&a_fragments, num_fragments * sizeof(myFrag)));
+            CUDA_CHECK_THROW(cudaMalloc(&s_fragments, num_fragments * sizeof(myFrag))); 
+            create_fragments<ElementAccumulator, MyFragment, kCount>(accumulator, a_fragments, m, n); 
+            create_fragments<ElementOutput, MyFragment, kCount>(source, s_fragments, m, n); 
+            activation_backward_kernel<T, myFrag, kCount><<<blocks, threads_per_block>>>(m_activation, a_fragments, m, n); 
             cudaStreamSynchrnize(); 
-            merge_fragments<ElementAccumulator, MyFragment, kCount>(d_fragments, accumulator, m, n);
-            cudaFree(d_fragments);
+            merge_fragments<ElementAccumulator, MyFragment, kCount>(a_fragments, accumulator, m, n);
+            // s_fragments is used as const only for activaton_backward_kernel, so direct delete once done 
+            CUDA_CHECK_THROW(cudaFree(d_fragments));
+            CUDA_CHECK_THROW(cudaFree(s_fragments));
     }    
 
     ElementOutput operator()(ElementAccumulator* accumulator, int m , int n ){
@@ -169,8 +176,6 @@ private:
 template <typename T>
 // if using tensorCore, vec as 32, if using cuda cores, vec as 1 
 static constexpr int n_vectorized_elements = (! std::is_same<T, float>::value) ? (128 / sizeof(T)) : 1;
-
-
 
 template <typename T>
 using ActivationOp = ActivationEpilogue<T, n_vectorized_elements<T>, TypeAccumulator, TypeCompute>;
@@ -226,10 +231,26 @@ void OurGemm(cublasHandle_t handle,
         throw std::runtime_error("cuBLAS GEMM failed");
     }
     
+#ifdef DEBUG_MODE    
+    std::cout << "gemm output before epilogue" << std::endl ; 
+    printMatrix(C, m, n); 
+#endif  
+
     // do activation op on matrix C 
     EPILOGUE myActivation ; 
-    myActivation(C, m, n); 
+    if ( myActivation.is_source_needed()){
+        //TODO: need double check, should the source matrix be C ?
+        myActivation(C, C, m, n); 
+    }else{
+        myActivation(C, m, n); 
+    }
     std::cout << "[DEBUG]: done activation after gemm op" << std::endl; 
+
+#ifdef DEBUG_MODE   
+    std:cout << "final gemm output after epilogue" << std::endl ;
+    printMatrix(C, m, n);
+#endif 
+
 }
 
 // specialization for float OurGemm 
