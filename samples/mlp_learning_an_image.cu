@@ -113,6 +113,12 @@ int main(int argc, char* argv[]) {
 			return 0;
 		}
 
+#ifdef DEBUG_MODE 
+	uint32_t n_hidden_layers = 1 ;
+#else 
+	uint32_t n_hidden_layers = 4 ; 
+#endif 
+	
 		json config = {
 			{"loss", {
 				{"otype", "RelativeL2"}
@@ -139,7 +145,7 @@ int main(int argc, char* argv[]) {
 				{"otype", "FullyFusedMLP"},
 				// {"otype", "CutlassMLP"},
 				{"n_neurons", 64},
-				{"n_hidden_layers", 4},
+				{"n_hidden_layers", n_hidden_layers}, 
 				{"activation", "ReLU"},
 				{"output_activation", "None"},
 			}},
@@ -152,8 +158,8 @@ int main(int argc, char* argv[]) {
 		}
 
 		// First step: load an image that we'd like to learn
-		// int width, height;
-		// GPUMemory<float> image = load_image(argv[1], width, height);
+		int width, height;
+		GPUMemory<float> image = load_image(argv[1], width, height);   // 256, 256 
 		// // /********************************  for benchmark purpose  *************************/ 
 		// int width = 256;
 		// int height = 256 ; 
@@ -197,7 +203,7 @@ int main(int argc, char* argv[]) {
 		// int sampling_width = 1024;
 		// int sampling_height = 1024;
 
-		uint32_t n_coords = sampling_width * sampling_height;  // 3250, 4333 
+		uint32_t n_coords = sampling_width * sampling_height;  
 		uint32_t n_coords_padded = next_multiple(n_coords, BATCH_SIZE_GRANULARITY);
 
 		GPUMemory<float> sampled_image(n_coords * 3);  

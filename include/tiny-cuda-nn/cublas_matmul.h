@@ -95,7 +95,7 @@ public:
             cudaMalloc(&d_fragments, num_fragments * sizeof(MyFragment));
             create_fragments<ElementAccumulator, MyFragment, kCount>(accumulator, d_fragments, m, n); 
             activation_kernel<ElementAccumulator, MyFragment, kCount><<<blocks, threads_per_block>>>(m_activation, d_fragments, m, n); 
-            cudaStreamSynchronize(); 
+            cudaStreamSynchronize(0); 
             merge_fragments<ElementAccumulator, MyFragment, kCount>(d_fragments, accumulator, m, n);
             cudaFree(d_fragments);
     } 
@@ -157,7 +157,7 @@ public:
             create_fragments<ElementAccumulator, MyFragment, kCount>(accumulator, a_fragments, m, n); 
             create_fragments<ElementOutput, MyFragment, kCount>(source, s_fragments, m, n); 
             activation_backward_kernel<ElementAccumulator, MyFragment, kCount><<<blocks, threads_per_block>>>(m_activation, a_fragments, m, n); 
-            cudaStreamSynchronize(); 
+            cudaStreamSynchronize(0); 
             merge_fragments<ElementAccumulator, MyFragment, kCount>(a_fragments, accumulator, m, n);
             // s_fragments is used as const only for activaton_backward_kernel, so direct delete once done 
             CUDA_CHECK_THROW(cudaFree(a_fragments));
@@ -233,7 +233,7 @@ void OurGemm(cublasHandle_t handle,
     
 #ifdef DEBUG_MODE    
     std::cout << "gemm output before epilogue" << std::endl ; 
-    printMatrix((const float*)C, m, n); 
+    printCublasMatrix((const float*)C, m, n, "pre_epilogue_C"); 
 #endif  
 
     // do activation op on matrix C 
@@ -248,7 +248,7 @@ void OurGemm(cublasHandle_t handle,
 
 #ifdef DEBUG_MODE   
     std::cout << "final gemm output after epilogue" << std::endl ;
-    printMatrix(C, m, n);
+    printCublasMatrix((const float*)C, m, n, "post_epilogue_C");
 #endif 
 
 }
@@ -266,6 +266,7 @@ struct OurGemmWrapper<EPILOGUE, float>{
                   const void *beta,
                   void *C, int ldc)
     {
+        std::cout << "[DEBUG]:  launch  float OurGemmWrapper " << std::endl ; 
         return OurGemm<EPILOGUE, float>(handle, TransA, TransB, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc); 
     }
 }; 
@@ -283,6 +284,7 @@ struct OurGemmWrapper<EPILOGUE, __half>{
                   const void *beta,
                   void *C, int ldc)
     {
+        std::cout << "[DEBUG]: launch half OurGemmWrapper " << std::endl; 
         return OurGemm<EPILOGUE, __half>(handle, TransA, TransB, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc); 
     }
 }; 

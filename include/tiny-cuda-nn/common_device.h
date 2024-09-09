@@ -107,7 +107,7 @@ __host__ __device__ void activation_kernel(Activation activation, fragment_t* fr
 	int matrix_idx = idx * kCount ; // start idx of current thread 
 	if(matrix_idx < m * n && matrix_idx + kCount < m * n ){
 		switch(activation){
-			case Activation::ReLu: 
+			case Activation::ReLU: 
 				TCNN_PRAGMA_UNROLL
 				for(int t=0; t<kCount ; ++t){
 					result[idx].x[t] = relu((T)frag[idx].x[t]); 		

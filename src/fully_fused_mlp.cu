@@ -592,6 +592,8 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 
 	static_assert(WIDTH % 16 == 0, "Width must be a multiply of 16.");
 
+	std::cout << "[DEBUG] mlp_fused_forward: WIDTH=" << WIDTH << " in_width=" <<in_width << std::endl ; 
+
 	CHECK_THROW(in_width % 16 == 0);
 	CHECK_THROW(weights.rows() == WIDTH);
 	CHECK_THROW(weights.cols() % 16 == 0);
@@ -618,6 +620,13 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 
 	const dim3 blocks = { n_blocks, 1u, 1u };
 
+#ifdef DEBUG_MODE 
+	input.print_matrix("mlp_fused_forward_input_matrix.log");
+	weights.print_matrix("mlp_fused_forward_weights_matrix.log");
+	// output_intermediate.print_matrix("mlp_fused_forward_output_intermediate_matrix.log");	
+	// output->print_matrix("mlp_fused_forward_output_matrix_pre.log");
+#endif 
+
 	check_shmem_error(cudaFuncSetAttribute(kernel_mlp_fused<WIDTH, N_ITERS, __half, ACTIVATION, INFERENCE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shmem_size));
 	kernel_mlp_fused<WIDTH, N_ITERS, __half, ACTIVATION, INFERENCE><<<blocks, threads, shmem_size, stream>>>(
 		output_activation,
@@ -634,6 +643,11 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 		input.layout() == RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major,
 		output && output->layout() == RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major
 	);
+
+// #ifdef DEBUG_MODE 
+// 	output->print_matrix("mlp_fused_forward_output_matrix_post.log");  // shape as [16, 65536] 
+// #endif 
+
 }
 
 template <typename T, int WIDTH>
@@ -657,7 +671,7 @@ m_output_activation{output_activation}
 		throw std::runtime_error("FullyFusedMLP requires at least 1 hidden layer (3 layers in total).");
 	}
 
-	m_n_hidden_matmuls = n_hidden_layers-1;
+	m_n_hidden_matmuls = n_hidden_layers-1;  //  n_hidden_layers(1),  m_n_hidden_matmuls(0)
 
 	m_padded_output_width = next_multiple(m_output_width, REQUIRED_ALIGNMENT());
 
@@ -732,6 +746,7 @@ std::unique_ptr<Context> FullyFusedMLP<T, WIDTH>::forward_impl(cudaStream_t stre
 	// If we have more than 16 output dimensions, these will be taken care of by CUTLASS rather than
 	// the fully fused kernel (which will have written out the second-to-last layer activations).
 	if (output && m_output_width > 16) {
+		std::cout << "[DEBUG] called fc_multiply()" << std::endl ;
 		fc_multiply(handle, stream, output_weight_matrix(use_inference_params), forward->hidden.back(), *output, m_output_activation);
 	}
 
@@ -769,6 +784,7 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 	// Compute transfer of output activation in-place... it's treated specially for performance reasons
 	GPUMatrixDynamic<T> backward_output_tmp;
 	if (m_output_activation != Activation::None) {
+		std::cout << "[DEBUG], m_output_activation is not None " << std::endl ;
 		backward_output_tmp = {m_padded_output_width, batch_size, stream, dL_doutput.layout()};
 		activation_backward_output_gpu(stream, dL_doutput.n_elements(), m_output_activation, output.data(), dL_doutput.data(), backward_output_tmp.data());
 	}
@@ -788,24 +804,17 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 
 	const GPUMatrixDynamic<T>& tmp_dL_doutput = m_output_activation == Activation::None ? dL_doutput : backward_output_tmp;
 
-	uint32_t tmp_idx = m_n_hidden_matmuls;
+	uint32_t tmp_idx = m_n_hidden_matmuls; // 0 
 	uint32_t backward_tmp_idx = 0;
 
 	// Output layer
 	if (param_gradients_mode != GradientMode::Ignore) {
 		multi_streams.emplace_back(stream, 2);
 
-// #if DEBUG_MODE 
-// 		auto forward_hidden_layer_3 = forward.hidden.at(tmp_idx).transposed(); 
-// 		forward_hidden_layer_3.print_matrix("backward_impl_forward_hidden_layer_3.log"); 
-// 		auto forward_hidden_layer_2 = forward.hidden.at(2).transposed(); 
-// 		forward_hidden_layer_2.print_matrix("backward_impl_forward_hidden_layer_2.log"); 
-// 		auto forward_hidden_layer_1 = forward.hidden.at(1).transposed(); 
-// 		forward_hidden_layer_1.print_matrix("backward_impl_forward_hidden_layer_1.log"); 
-//  	// FIXME: Uncaught exception: Matrix C has incorrect size 0x0 != 16x64
-// 		// auto output_gradient = std::move(output_gradient_matrix());
-// 		// output_gradient.print_matrix("backward_impl_output_gradient.log"); 
-// #endif 
+#if DEBUG_MODE 
+		auto forward_hidden_layer_0 = forward.hidden.at(tmp_idx).transposed(); // 根据定义 forward.hidden 存的各层 post-activation 值，对于n_hidden_layer==1，这里即 input_layer 到 1st hidden layer， 过relu 后的值 
+		forward_hidden_layer_0.print_matrix("backward_impl_forward_hidden_layer_0.log");  
+#endif 
 
 		fc_multiply_split_k(handle, multi_streams.back().get(1), tmp_dL_doutput, forward.hidden.at(tmp_idx).transposed(), output_gradient_matrix(), split_k_factor, param_gradient_beta);
 	}
@@ -847,6 +856,10 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 		tmp_idx -= 1;
 		++backward_tmp_idx;
 	}
+
+	// FIXME: cublas 中 input_gradient_matrix() 计算的不正确
+	// backward_tmp.at(layer_l):: loss相对 layer_l 的error 
+	// forward.hidden.at(layer_l):: 前向计算layer_l 过激活函数后的值 
 
 	if (param_gradients_mode != GradientMode::Ignore) {
 		multi_streams.emplace_back(stream, 2);
