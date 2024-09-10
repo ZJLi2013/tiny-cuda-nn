@@ -306,6 +306,8 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_backward(
 	int shmem_size = sizeof(__half) * ((16 * N_ITERS) * (WIDTH + SKEW)); // WIDTH rows of input and 16 * threads.z rows of weights
 	const dim3 blocks = { n_blocks, 1u, 1u };
 
+	std::cout << "[DEBUG] in mlp_fused_backward(), ACTIVATION= " << to_string(ACTIVATION) << std::endl; 
+
 	// The kernels operate with transposed layouts compared with the MLP code
 	if (dL_doutput.layout() == RM) {
 		check_shmem_error(cudaFuncSetAttribute(kernel_mlp_fused_backward<WIDTH, N_ITERS, ACTIVATION, nvcuda::wmma::col_major>, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem_size));
@@ -591,8 +593,7 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 	constexpr uint32_t N_BLOCK_ROWS = WIDTH / 16;
 
 	static_assert(WIDTH % 16 == 0, "Width must be a multiply of 16.");
-
-	std::cout << "[DEBUG] mlp_fused_forward: WIDTH=" << WIDTH << " in_width=" <<in_width << std::endl ; 
+	std::cout << "[DEBUG] mlp_fused_forward: WIDTH=" << WIDTH << " in_width=" <<in_width << " Activation op= " << to_string(output_activation) << std::endl ;    // 64,  64
 
 	CHECK_THROW(in_width % 16 == 0);
 	CHECK_THROW(weights.rows() == WIDTH);
@@ -658,12 +659,12 @@ FullyFusedMLP<T, WIDTH>::FullyFusedMLP(
 	Activation activation,
 	Activation output_activation
 ) :
-m_input_width{input_width},
-m_network_width{WIDTH},
-m_output_width{output_width},
+m_input_width{input_width}, // 64 
+m_network_width{WIDTH},	 // 64 
+m_output_width{output_width}, 
 m_n_hidden_layers{n_hidden_layers},
-m_activation{activation},
-m_output_activation{output_activation}
+m_activation{activation},  // ReLU
+m_output_activation{output_activation}   // None 
 {
 	cublasCreate(&handle); 
 
@@ -729,6 +730,7 @@ std::unique_ptr<Context> FullyFusedMLP<T, WIDTH>::forward_impl(cudaStream_t stre
 	// Make sure our temporary buffers have the correct size for the given batch size
 	uint32_t batch_size = input.n();
 	auto forward = allocate_forward_buffers(stream, batch_size);
+	std::cout << "[DEBUG]: check mlp_fused_forward() calls. m_activation: " << to_string(m_activation) << " output_activation: " << to_string(m_output_activation) << std::endl ;
 
 	// ASSUMPTION: weight matrices & forward_tmp matrices are contiguous in memory
 	switch (m_activation) {
@@ -768,6 +770,7 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 	uint32_t batch_size = dL_doutput.n();
 
 #if DEBUG_MODE 
+	std::cout << "[DEBUG] input, output and dL_doutput passed into backward_impl()" << std::endl ; 
 	input.print_matrix("backward_impl_input.log");
 	output.print_matrix("backward_impl_output.log");
 	dL_doutput.print_matrix("backward_impl_dL_doutput.log");
@@ -784,7 +787,6 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 	// Compute transfer of output activation in-place... it's treated specially for performance reasons
 	GPUMatrixDynamic<T> backward_output_tmp;
 	if (m_output_activation != Activation::None) {
-		std::cout << "[DEBUG], m_output_activation is not None " << std::endl ;
 		backward_output_tmp = {m_padded_output_width, batch_size, stream, dL_doutput.layout()};
 		activation_backward_output_gpu(stream, dL_doutput.n_elements(), m_output_activation, output.data(), dL_doutput.data(), backward_output_tmp.data());
 	}
@@ -794,6 +796,7 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 	// - input_gradient = weights.T * output_gradient
 	// - RELU: pre_activation_gradinet = post_activation_gradient if val > 0 else 0
 
+	// TODO: 权重矩阵跟新 是否就是这个参数控制的?  因为fc_multiply_split_k() 只算了权重梯度 
 	const float param_gradient_beta = param_gradients_mode == GradientMode::Accumulate ? 1.0f : 0.0f;
 
 	std::vector<SyncedMultiStream> multi_streams;
@@ -810,13 +813,20 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 	// Output layer
 	if (param_gradients_mode != GradientMode::Ignore) {
 		multi_streams.emplace_back(stream, 2);
-
 #if DEBUG_MODE 
-		auto forward_hidden_layer_0 = forward.hidden.at(tmp_idx).transposed(); // 根据定义 forward.hidden 存的各层 post-activation 值，对于n_hidden_layer==1，这里即 input_layer 到 1st hidden layer， 过relu 后的值 
-		forward_hidden_layer_0.print_matrix("backward_impl_forward_hidden_layer_0.log");  
+		// 根据定义 forward.hidden 存的各层 post-activation 值。对于n_hidden_layer==1，这里 即 A1
+		auto forward_hidden_layer_0 = forward.hidden.at(tmp_idx).transposed(); 
+		forward_hidden_layer_0.print_matrix("backward_impl_forward_hidden_layer_0_A1.log");  
+		auto forward_hidden_layer_1 = forward.hidden.at(tmp_idx+1).transposed(); // Z2 
+		forward_hidden_layer_0.print_matrix("backward_impl_forward_hidden_layer_0_Z2.log");  
 #endif 
-
+		// output_layer 权重梯度 =  dl/do * A1 
+		// TODO: outptu_layer 权重矩阵 更新在哪里 ?   
 		fc_multiply_split_k(handle, multi_streams.back().get(1), tmp_dL_doutput, forward.hidden.at(tmp_idx).transposed(), output_gradient_matrix(), split_k_factor, param_gradient_beta);
+#if DEBUG_MODE 
+	auto output_gradient_mat = output_gradient_matrix() ; 
+	output_gradient_mat.print_matrix("backward_impl_output_gradient_matrix.log");  
+#endif 
 	}
 
 	// If the output width is larger than 16 dims, we use cutlass to backpropagate through the last layer
@@ -827,6 +837,11 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 
 	// Only let the fully fused kernel compute gradients w.r.t. the input, if the input layer has the same size & layout as the other layers
 	auto dL_dinput_fused = input.m() == forward.hidden.at(0).m() && input.layout() == CM ? dL_dinput : nullptr;
+
+	std::cout << "[DEBUG]: in backward_impl m_n_hidden_matmuls= " << m_n_hidden_matmuls  \
+			 << " m_output_width=" << m_output_width \
+			 << " dL_dinput_fused=" << dL_dinput_fused \
+			 << "param_gradient_beta= " << param_gradient_beta << std::endl; 
 
 	// ASSUMPTION: weight matrices & forward_tmp matrices are contiguous in memory
 	switch (m_activation) {
@@ -839,12 +854,18 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 		case Activation::Softplus:    mlp_fused_backward<WIDTH, T, Activation::Softplus>(   stream, input_weight_matrix(use_inference_params), weight_matrix_at(use_inference_params, 0), tmp_dL_doutput, backward_tmp.at(backward_tmp_idx), forward.hidden.at(0), dL_dinput_fused, m_n_hidden_matmuls); break;
 		case Activation::Tanh:        mlp_fused_backward<WIDTH, T, Activation::Tanh>(       stream, input_weight_matrix(use_inference_params), weight_matrix_at(use_inference_params, 0), tmp_dL_doutput, backward_tmp.at(backward_tmp_idx), forward.hidden.at(0), dL_dinput_fused, m_n_hidden_matmuls); break;
 		default: throw std::runtime_error{"Unsupported activation."};
-	}
+	} // 计算loss相对 last-hidden layer post-act 的 delta in general, 对于hidden_layer=1, 实际就是 delta_1 
+
+#if DEBUG_MODE 
+	auto delta_1 = backward_tmp.at(backward_tmp_idx) ; 
+	delta_1.print_matrix("backward_impl_delta_1.log");  
+#endif 	
 
 	tmp_idx -= 1;
 	++backward_tmp_idx;
 
-	// layers
+	// hidden layers 
+	// for hidden_layer=1, ignored 
 	for (uint32_t i = 0; i < m_n_hidden_matmuls; ++i) {
 		uint32_t matrix_idx = m_n_hidden_matmuls - i - 1;
 
@@ -857,14 +878,19 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 		++backward_tmp_idx;
 	}
 
-	// FIXME: cublas 中 input_gradient_matrix() 计算的不正确
-	// backward_tmp.at(layer_l):: loss相对 layer_l 的error 
-	// forward.hidden.at(layer_l):: 前向计算layer_l 过激活函数后的值 
-
+	// 计算 i->h 权重梯度 :  input_gradient_matrix a.k.a dW1 = \delta_1 *  x^T 
 	if (param_gradients_mode != GradientMode::Ignore) {
 		multi_streams.emplace_back(stream, 2);
 		fc_multiply_split_k(handle, multi_streams.back().get(1), backward_tmp.at(backward_tmp_idx-1), input.transposed(), input_gradient_matrix(), split_k_factor, param_gradient_beta);
 	}
+
+	// 确认下后向后，input_gradient_matix or input_weight_matrix 是否一致 
+#if DEBUG_MODE 
+	auto input_gradient_mat = input_gradient_matrix() ; 
+	input_gradient_mat.print_matrix("backward_impl_input_gradient_mat.log");  
+	auto input_weight_mat = input_weight_matrix();
+	input_weight_mat.print_matrix("backward_impl_input_weight_mat.log");  
+#endif 		
 
 	// If requested and if the fully fused kernel didn't already take care of it, compute sensitivity of loss w.r.t. inputs
 	if (dL_dinput && !dL_dinput_fused) {
