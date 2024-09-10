@@ -817,15 +817,12 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 		// 根据定义 forward.hidden 存的各层 post-activation 值。对于n_hidden_layer==1，这里 即 A1
 		auto forward_hidden_layer_0 = forward.hidden.at(tmp_idx).transposed(); 
 		forward_hidden_layer_0.print_matrix("backward_impl_forward_hidden_layer_0_A1.log");  
-		auto forward_hidden_layer_1 = forward.hidden.at(tmp_idx+1).transposed(); // Z2 
-		forward_hidden_layer_0.print_matrix("backward_impl_forward_hidden_layer_0_Z2.log");  
 #endif 
 		// output_layer 权重梯度 =  dl/do * A1 
 		// TODO: outptu_layer 权重矩阵 更新在哪里 ?   
 		fc_multiply_split_k(handle, multi_streams.back().get(1), tmp_dL_doutput, forward.hidden.at(tmp_idx).transposed(), output_gradient_matrix(), split_k_factor, param_gradient_beta);
 #if DEBUG_MODE 
-	auto output_gradient_mat = output_gradient_matrix() ; 
-	output_gradient_mat.print_matrix("backward_impl_output_gradient_matrix.log");  
+	output_gradient_matrix().print_matrix("backward_impl_output_gradient_matrix.log");  
 #endif 
 	}
 
@@ -842,6 +839,10 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 			 << " m_output_width=" << m_output_width \
 			 << " dL_dinput_fused=" << dL_dinput_fused \
 			 << "param_gradient_beta= " << param_gradient_beta << std::endl; 
+			 // m_n_hidden_matmuls = 0 
+			 // m_output_width = 3
+			 // dL_dinput_fused = 0 
+			 // param_gradient_beta = 0 
 
 	// ASSUMPTION: weight matrices & forward_tmp matrices are contiguous in memory
 	switch (m_activation) {
@@ -857,8 +858,7 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 	} // 计算loss相对 last-hidden layer post-act 的 delta in general, 对于hidden_layer=1, 实际就是 delta_1 
 
 #if DEBUG_MODE 
-	auto delta_1 = backward_tmp.at(backward_tmp_idx) ; 
-	delta_1.print_matrix("backward_impl_delta_1.log");  
+	(backward_tmp.at(backward_tmp_idx)).print_matrix("backward_impl_delta_1.log");  
 #endif 	
 
 	tmp_idx -= 1;
@@ -881,15 +881,12 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 	// 计算 i->h 权重梯度 :  input_gradient_matrix a.k.a dW1 = \delta_1 *  x^T 
 	if (param_gradients_mode != GradientMode::Ignore) {
 		multi_streams.emplace_back(stream, 2);
-		fc_multiply_split_k(handle, multi_streams.back().get(1), backward_tmp.at(backward_tmp_idx-1), input.transposed(), input_gradient_matrix(), split_k_factor, param_gradient_beta);
+		// fc_multiply_split_k(handle, multi_streams.back().get(1), backward_tmp.at(backward_tmp_idx-1), input.transposed(), input_gradient_matrix(), split_k_factor, param_gradient_beta);
 	}
-
-	// 确认下后向后，input_gradient_matix or input_weight_matrix 是否一致 
+	
 #if DEBUG_MODE 
-	auto input_gradient_mat = input_gradient_matrix() ; 
-	input_gradient_mat.print_matrix("backward_impl_input_gradient_mat.log");  
-	auto input_weight_mat = input_weight_matrix();
-	input_weight_mat.print_matrix("backward_impl_input_weight_mat.log");  
+	input_gradient_matrix().print_matrix("backward_impl_input_gradient_mat.log");  
+	input_weight_matrix(use_inference_params).print_matrix("backward_impl_input_weight_mat.log");  
 #endif 		
 
 	// If requested and if the fully fused kernel didn't already take care of it, compute sensitivity of loss w.r.t. inputs
