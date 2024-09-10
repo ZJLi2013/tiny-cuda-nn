@@ -3,7 +3,6 @@
 #define DEBUG_CONFIG_H
 
 #define DEBUG_MODE 1
-#define DEBUG_CUBLAS 1
 #include <iostream>
 
 template<typename T>
@@ -19,7 +18,7 @@ inline void printCublasMatrix(const T* matrix, int rows, int cols, const char* m
     for (int i = 0; i < rows; ++i) {
         for (int j = 0; j < cols; ++j) {
             if( std::is_same<T, float>::value){
-                logfile << cpu_data[i * cols + j] << " ";
+                logfile << static_cast<float>(cpu_data[i * cols + j]) << " ";
             }else if(std::is_same<T, __half>::value){
                 logfile << __half2float(cpu_data[i * cols + j]) << " ";
             }else{
@@ -45,7 +44,7 @@ inline void printCutlassMatrix(const T* matrix, int rows, int cols, const char* 
     for (int i = 0; i < rows; ++i) {
         for (int j = 0; j < cols; ++j) {
             if( std::is_same<T, float>::value){
-                logfile << cpu_data[i * cols + j] << " ";
+                logfile << static_cast<float>(cpu_data[i * cols + j]) << " ";
             }else if(std::is_same<T, __half>::value){
                 logfile << __half2float(cpu_data[i * cols + j]) << " ";
             }else{

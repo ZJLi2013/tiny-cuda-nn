@@ -231,10 +231,10 @@ void OurGemm(cublasHandle_t handle,
         throw std::runtime_error("cuBLAS GEMM failed");
     }
     
-#ifdef DEBUG_MODE    
-    std::cout << "gemm output before epilogue" << std::endl ; 
-    printCublasMatrix<TypeCompute>((const float*)C, m, n, "pre_epilogue_C"); 
-#endif  
+// #ifdef DEBUG_MODE    
+//     std::cout << "gemm output before epilogue" << std::endl ; 
+//     printCublasMatrix<TypeCompute>((const float*)C, m, n, "pre_epilogue_C"); 
+// #endif  
 
     // do activation op on matrix C 
     EPILOGUE myActivation ; 
@@ -246,10 +246,10 @@ void OurGemm(cublasHandle_t handle,
     }
     std::cout << "[DEBUG]: done activation after gemm op" << std::endl; 
 
-#ifdef DEBUG_MODE   
-    std::cout << "final gemm output after epilogue" << std::endl ;
-    printCublasMatrix<TypeCompute>((const float*)C, m, n, "post_epilogue_C");
-#endif 
+// #ifdef DEBUG_MODE   
+//     std::cout << "final gemm output after epilogue" << std::endl ;
+//     printCublasMatrix<TypeCompute>((const float*)C, m, n, "post_epilogue_C");
+// #endif 
 
 }
 

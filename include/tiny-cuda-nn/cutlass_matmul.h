@@ -47,6 +47,8 @@
 
 #include <type_traits>
 
+#include <tiny-cuda-nn/debug_config.h> // for cutlass matrix print 
+
 namespace tcnn {
 
 #define CUTLASS_CHECK_THROW(x)                                                                                        \
@@ -346,11 +348,11 @@ void fc_multiply_split_k_impl(cudaStream_t stream, const typename Gemm::Argument
 	// Launch initialized CUTLASS kernel
 	status = gemm_op(stream);
 	CUTLASS_CHECK_THROW(status);
-#ifdef DEBUG_CUTLASS
+#ifdef DEBUG_MODE
 	std::cout << "[DEBUG] cutlass split_k_impl print " << std::endl; 
-	printCutlassMatrix<TypeCompute>(args.ref_A.data(), m, k, "split_k_matA");
-	printCutlassMatrix<TypeCompute>(args.ref_B.data(), k, n, "split_k_matB");
-	printCutlassMatrix<TypeCompute>(args.ref_C.data(), m, n "split_k_matC");
+	printCutlassMatrix<__half>((__half*)args.ref_A.data(), m, k, "split_k_matA");
+	printCutlassMatrix<__half>((__half*)args.ref_B.data(), k, n, "split_k_matB");
+	printCutlassMatrix<__half>((__half*)args.ref_C.data(), m, n, "split_k_matC");
 #endif 
 }
 
@@ -481,7 +483,7 @@ void fc_multiply_split_k(cudaStream_t stream, const GPUMatrix<TypeA, LayoutA>& A
 		split_k_slices
 	};
 
-	fc_multiply_split_k_impl<Gemm>(stream, arguments, m, n, k);
+	fc_multiply_split_k_impl<Gemm>(stream, arguments, M, N, K);
 }
 
 template <typename config, typename TypeA, MatrixLayout LayoutA, typename TypeB, MatrixLayout LayoutB, typename TypeC, typename TypeD>
