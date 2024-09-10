@@ -14,7 +14,7 @@ inline void printCublasMatrix(const T* matrix, int rows, int cols, const char* m
     cudaMemcpy(cpu_data, matrix, rows*cols*sizeof(T), cudaMemcpyDeviceToHost); 
     std::ofstream logfile(log_path, std::ios::app);
     auto status = logfile.is_open(); 
-    logfile << "Open " << local_path << " for logging " << std::endl; 
+    logfile << "Open " << local_path << " for logging " << " [ " << rows << " , " << cols << " ]" << std::endl; 
     for (int i = 0; i < rows; ++i) {
         for (int j = 0; j < cols; ++j) {
             if( std::is_same<T, float>::value){
@@ -25,7 +25,7 @@ inline void printCublasMatrix(const T* matrix, int rows, int cols, const char* m
                 std::cerr << "not supported data format in printCublasMatrix" << std::endl;  
             }
         }
-        logfile << std::endl ; 
+        logfile << "\n" << std::endl ; 
     }
     logfile.close(); 
     delete[] cpu_data; 
@@ -40,7 +40,7 @@ inline void printCutlassMatrix(const T* matrix, int rows, int cols, const char* 
     cudaMemcpy(cpu_data, matrix, rows*cols*sizeof(T), cudaMemcpyDeviceToHost); 
     std::ofstream logfile(log_path, std::ios::app);
     auto status = logfile.is_open(); 
-    logfile << "Open " << local_path << " for logging " << std::endl; 
+    logfile << "Open " << local_path << " for logging " << " [ " << rows << " , " << cols << " ]" << std::endl; 
     for (int i = 0; i < rows; ++i) {
         for (int j = 0; j < cols; ++j) {
             if( std::is_same<T, float>::value){
@@ -51,7 +51,7 @@ inline void printCutlassMatrix(const T* matrix, int rows, int cols, const char* 
                 std::cerr << "not supported data format in printCublasMatrix" << std::endl;  
             }
         }
-        logfile << std::endl ; 
+        logfile << "\n" <<  std::endl ; 
     }
     logfile.close(); 
     delete[] cpu_data; 
