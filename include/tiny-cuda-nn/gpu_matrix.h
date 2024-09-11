@@ -421,10 +421,10 @@ public:
 				for(int j=0; j< this->m_cols; ++j){
 					if (std::is_same<T, float>::value){
 						// std::cout << static_cast<float>(cpu_data[i * this->m_cols + j]) << "  " ;
-						logFile << static_cast<float>(cpu_data[i * this->m_cols + j] ) << "  " ;
+						logFile << static_cast<float>(cpu_data[i * this->m_cols + j] ) << " " ;
 					}else if(std::is_same<T, __half>::value){
 						// std::cout << __half2float( cpu_data[i * this->m_cols + j]) << "  " ;
-						logFile << __half2float(cpu_data[i * this->m_cols + j]) << "  " ;
+						logFile << __half2float(cpu_data[i * this->m_cols + j]) << " " ;
 					}else{
 						std::cerr << "not supported data format in print matrix" << std::endl ; 
 					}

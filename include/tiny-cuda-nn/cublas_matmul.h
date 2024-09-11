@@ -231,10 +231,10 @@ void OurGemm(cublasHandle_t handle,
         throw std::runtime_error("cuBLAS GEMM failed");
     }
     
-// #ifdef DEBUG_MODE    
-//     std::cout << "gemm output before epilogue" << std::endl ; 
-//     printCublasMatrix<TypeCompute>((const float*)C, m, n, "pre_epilogue_C"); 
-// #endif  
+#ifdef DEBUG_MODE    
+    std::cout << "gemm output before epilogue" << std::endl ; 
+    printCublasMatrix<TypeCompute>((const float*)C, m, n, "pre_epilogue_C"); 
+#endif  
 
     // do activation op on matrix C 
     EPILOGUE myActivation ; 
@@ -246,10 +246,10 @@ void OurGemm(cublasHandle_t handle,
     }
     std::cout << "[DEBUG]: done activation after gemm op" << std::endl; 
 
-// #ifdef DEBUG_MODE   
-//     std::cout << "final gemm output after epilogue" << std::endl ;
-//     printCublasMatrix<TypeCompute>((const float*)C, m, n, "post_epilogue_C");
-// #endif 
+#ifdef DEBUG_MODE   
+    std::cout << "final gemm output after epilogue" << std::endl ;
+    printCublasMatrix<TypeCompute>((const float*)C, m, n, "post_epilogue_C");
+#endif 
 
 }
 
@@ -303,6 +303,7 @@ void OurSplitGemm(cublasHandle_t handle,
 {
     cudaDataType_t dataType = getCUDADatatype(typeid(network_precision_t));
     if (split_k_slices == 1){
+        std::cout << "[DEBUG] split_k_slice==1" << std::endl; 
         cublasStatus_t status = cublasGemmEx(handle, TransA, TransB,
                                             m, n, k,
                                             alpha,
@@ -315,7 +316,7 @@ void OurSplitGemm(cublasHandle_t handle,
                                             
         if (status != CUBLAS_STATUS_SUCCESS) {
             throw std::runtime_error("cuBLAS GEMM failed");
-        }        
+        }       
     }else{
         // Split-K GEMM implementation
         const T* B_slice;
@@ -370,9 +371,9 @@ void fc_multiply(cublasHandle_t &handle, cudaStream_t stream, const GPUMatrix<Ty
         throw std::runtime_error(fmt::format("Matrix D has incorrect size {}x{} != {}x{}", D.m(), D.n(), M, N));
     }
 
-    int lda = M ;
-    int ldb = K ;
-    int ldc = M ; 
+    int lda = A.stride() ; 
+    int ldb = B.stride() ;
+    int ldc = C.stride() ;     
 
     network_precision_t alpha = 1.0f;
     network_precision_t beta = sum_source ? 1.0f : 0.0f;
@@ -442,15 +443,18 @@ void fc_multiply_split_k(cublasHandle_t handle, cudaStream_t stream, const GPUMa
     }
 
     // A(m, k), B(k, n), C(m, n) , leadning-dim only relate to physical memory layout, no matter T or N 
-    int lda = M ; 
-    int ldb = K / split_k_slices;
-    int ldc = M ; 
+    // 因为tiny-cuda-nn 使用了自己的 gpu_matrix 类，并不是默认cublas 的layout。所以，这里leading-dim 需要跟 matrix 的stride 一致
+    int lda = A.stride() ; 
+    int ldb = B.stride() ;
+    int ldc = C.stride() ; 
+
     // cublasSetStream(handle, stream);
     // TODO: need specify ComputeType and AccumulatorType 
     network_precision_t alpha = __float2half(1.0) ; 
-    network_precision_t half_beta = __float2half(1.0) ;  // for splitK case, need to accumulate C from each split to form final C matrix 
+    network_precision_t half_beta = __float2half(beta) ;  // for splitK case, need to accumulate C from each split to form final C matrix 
+
     OurSplitGemm<network_precision_t>(handle, TransA, TransB, M, N, K, &alpha, A.data(), lda, B.data(), ldb, &half_beta, C.data(), ldc, split_k_slices); 
-#ifdef DEBUG_CUBLAS     
+#ifdef DEBUG_MODE    
     C.print_matrix("split_k_matC.log");
     A.print_matrix("split_k_matA.log"); 
     B.print_matrix("split_k_matB.log");
