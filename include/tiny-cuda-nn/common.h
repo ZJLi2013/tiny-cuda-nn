@@ -37,6 +37,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
+#include <string> 
 
 #if defined(__CUDACC__)
 #  include <cuda_fp16.h>
@@ -160,6 +161,15 @@ enum class MatrixLayout {
 	ColumnMajor = 1,
 	AoS = 1,
 };
+
+inline std::string to_string(MatrixLayout mlayout)
+{
+	switch(mlayout){
+		case MatrixLayout::RowMajor: return "RowMajor" ;
+		case MatrixLayout::ColumnMajor: return "ColumnMajor" ;
+		default: throw std::runtime_error{"Invalid MatrixLayout."};
+	}
+}
 
 static constexpr MatrixLayout RM = MatrixLayout::RowMajor;
 static constexpr MatrixLayout SoA = MatrixLayout::SoA;

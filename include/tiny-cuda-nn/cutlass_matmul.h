@@ -350,9 +350,9 @@ void fc_multiply_split_k_impl(cudaStream_t stream, const typename Gemm::Argument
 	CUTLASS_CHECK_THROW(status);
 #ifdef DEBUG_MODE
 	std::cout << "[DEBUG] cutlass split_k_impl print " << std::endl; 
-	printCutlassMatrix<__half>((__half*)args.ref_A.data(), m, k, "split_k_matA");
-	printCutlassMatrix<__half>((__half*)args.ref_B.data(), k, n, "split_k_matB");
-	printCutlassMatrix<__half>((__half*)args.ref_C.data(), m, n, "split_k_matC");
+	printCutlassMatrix<TypeCompute>((TypeCompute*)args.ref_A.data(), m, k, "split_k_matA");
+	printCutlassMatrix<TypeCompute>((TypeCompute*)args.ref_B.data(), k, n, "split_k_matB");
+	printCutlassMatrix<TypeCompute>((TypeCompute*)args.ref_C.data(), m, n, "split_k_matC");
 #endif 
 }
 

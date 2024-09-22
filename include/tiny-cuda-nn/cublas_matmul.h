@@ -233,7 +233,7 @@ void OurGemm(cublasHandle_t handle,
     
 #ifdef DEBUG_MODE    
     std::cout << "gemm output before epilogue" << std::endl ; 
-    printCublasMatrix<TypeCompute>((const float*)C, m, n, "pre_epilogue_C"); 
+    printCublasMatrix<TypeCompute>((const TypeCompute*)C, m, n, "pre_epilogue_C"); 
 #endif  
 
     // do activation op on matrix C 
@@ -248,7 +248,7 @@ void OurGemm(cublasHandle_t handle,
 
 #ifdef DEBUG_MODE   
     std::cout << "final gemm output after epilogue" << std::endl ;
-    printCublasMatrix<TypeCompute>((const float*)C, m, n, "post_epilogue_C");
+    printCublasMatrix<TypeCompute>((const TypeCompute*)C, m, n, "post_epilogue_C");
 #endif 
 
 }

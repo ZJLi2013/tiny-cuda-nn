@@ -37,6 +37,7 @@
 #include <mma.h>
 
 #include <tiny-cuda-nn/debug_config.h>
+#include <cstdio> 
 
 namespace tcnn {
 
@@ -46,6 +47,34 @@ void check_shmem_error(cudaError_t error) {
 	if (error != cudaSuccess) {
 		throw std::runtime_error{"FullyFusedMLP: insufficient shared memory available on the GPU. Reduce `n_neurons` or use `CutlassMLP` (better compatibility but slower) instead."};
 	}
+}
+
+__global__ void sh2gmem(__half* device_mem, const __half* __restrict__ shmem, int N)
+{
+	// block_level_thread_index=threadIdx.z×(blockDim.x×blockDim.y)+threadIdx.y×blockDim.x+threadIdx.x
+	// threadIdx.x, threadIdx.y, threadIdx.z are thread index within the block in x,y,z dimensions
+	// blockDim.x, blockDim.y, blockDim.z are dimension/size of the t-block. a.k.a 32, 4, 1 
+	int tid =  threadIdx.x + threadIdx.y * blockDim.x ; 
+    if(tid< N){
+        device_mem[tid] = shmem[tid]; 
+    }	
+}
+
+__global__ void threadblock_shmem_print(const __half* __restrict__ shmem,  int shmem_size, const char* display_name)
+{
+	__half* host_mem = (__half*)malloc(shmem_size); 
+    __half* device_mem ; 
+	cudaMalloc(&device_mem, shmem_size);
+	const dim3 threads={32, 4, 1}
+	sh2gmem<<<1, threads>>>(device_mem, act_shmem, shmem_size/sizeof(__half));
+	cudaMemcpy(host_mem, device_mem, shmem_size, cudaMemcpyDeviceToHost); 
+	printf(" -------------------- %s ----------------\n", display_name ); 
+    for(int i=0; i<N; i++){
+        printf("%f ", __half2float(host_mem[i]) );
+    }
+    printf(" --------------- DONE ----------------- \n");
+    free(host_mem);
+    cudaFree(device_mem);
 }
 
 template <int WIDTH, int N_ITERS, typename OUT_T, bool BACKWARD=false>
@@ -328,12 +357,12 @@ __device__ void threadblock_input_layer_forward_dynamic(Activation activation, _
 	// in_width is the dynamic width of the input layer
 
 	constexpr uint32_t SKEW = WIDTH % 16 == 0 ? 8 : 0;
-	constexpr uint32_t INPUT_SKEW = 8;
+	constexpr uint32_t INPUT_SKEW = 8;  // used to handle padding, ensure alignment in shmem 
 	constexpr uint32_t N_BLOCKS = WIDTH / 16;
 
 	using namespace nvcuda;
 
-	// Fragments
+	// Fragments: small tiles of matrices 
 	wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, INPUT_LAYOUT> act_frag;
 	wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> weights_frag;
 	wmma::fragment<wmma::accumulator, 16, 16, 16, OUT_T> result_frag[N_ITERS];
@@ -515,7 +544,7 @@ __global__ void kernel_mlp_fused(const Activation output_activation, const __hal
 	// } else {
 	// 	assert(out_intermediate);
 	// }
-
+	
 	// Shared memory contains the intermediate activations of blockDim.y*16 elements.
 	// In some cases, it also contains the weight matrix for the first and last layer.
 	extern __shared__ __half shmem[];
@@ -524,20 +553,34 @@ __global__ void kernel_mlp_fused(const Activation output_activation, const __hal
 	// Each block computes exactly one 16-element chunk of the batch.
 	const uint32_t elem_idx = 16 * blockIdx.x * N_ITERS;
 
+	if (threadIdx.x == 0 ){
+		printf("[KERNEL DEBUG]: in kernel_mlp_fused(), blockIdx.x=%d, elem_idx=%d,  in_width=%d , WIDTH=%d, N_ITERS=%d\n", blockIdx.x, elem_idx, in_width, WIDTH, N_ITERS) ;
+	}
+
 	// First layer
 	if (input_layout == nvcuda::wmma::mem_col_major || in_width != WIDTH) {
+		// printf("[KERNEL DEBUG]: in kernel_mlp_fused(), go dynamic branch") ;
 		if (input_layout == nvcuda::wmma::mem_row_major) {
 			threadblock_input_layer_forward_dynamic<WIDTH, N_ITERS, OUT_T, nvcuda::wmma::row_major>(ACTIVATION, act_shmem, input + elem_idx * in_width, weights, !INFERENCE ? (out_intermediate + elem_idx * WIDTH) : nullptr, in_width, batch_size);
 		} else {
 			threadblock_input_layer_forward_dynamic<WIDTH, N_ITERS, OUT_T, nvcuda::wmma::col_major>(ACTIVATION, act_shmem, input + elem_idx, weights, !INFERENCE ? (out_intermediate + elem_idx * WIDTH) : nullptr, in_width, batch_size);
 		}
-	} else {
+	} else {  // go static !!! 
 		// If the input has the same width & layout as the hidden layers, we can simply use the network's regular layer routine (with static size)
 		// instead of using the slower dynamic input layer routine.
+		// printf("[KERNEL DEBUG]: in kernel_mlp_fused(), go static branch");
 		threadblock_load_input_static<WIDTH, N_ITERS>(act_shmem, input + elem_idx * WIDTH);
 		threadblock_layer<WIDTH, N_ITERS, OUT_T>(ACTIVATION, act_shmem, weights, !INFERENCE ? (out_intermediate + elem_idx * WIDTH) : nullptr);
 	}
 
+	// print shmem Sep-22
+#ifdef DEBUG_MODE 
+	size_t shmem_size = sizeof(__half) * (16 + 16 * N_ITERS) * (WIDTH + 8); 
+	std::string display_name="1st_layer" + std::to_string(GridDim.x) ; 
+	threadblock_shmem_print(act_shmem, shmem_size, display_name.c_str());
+#endif 
+
+	//Sep-11: 对于n_hidden_matmuls==0, out_intermediate 跟新就发生在first-layer。输出不一致，就说明是这里的不一致
 	const uint32_t first_weights_stride = WIDTH * in_width;
 	const uint32_t weights_stride = WIDTH * WIDTH;
 	const uint32_t layer_stride = WIDTH * batch_size;
@@ -593,7 +636,6 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 	constexpr uint32_t N_BLOCK_ROWS = WIDTH / 16;
 
 	static_assert(WIDTH % 16 == 0, "Width must be a multiply of 16.");
-	std::cout << "[DEBUG] mlp_fused_forward: WIDTH=" << WIDTH << " in_width=" <<in_width << " Activation op= " << to_string(output_activation) << std::endl ;    // 64,  64
 
 	CHECK_THROW(in_width % 16 == 0);
 	CHECK_THROW(weights.rows() == WIDTH);
@@ -619,13 +661,16 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 		shmem_size = std::max(shmem_size, sizeof(__half) * (WIDTH + 16) * (in_width + INPUT_SKEW));
 	}
 
+	std::cout << "[DEBUG] mlp_fused_forward: BS=" << batch_size << " WIDTH=" << WIDTH << " in_width=" << in_width << " Activation op= " << to_string(output_activation) << "sm_size=" << shmem_size << std::endl ;    // 64,  64, ActOp=None
+
+
 	const dim3 blocks = { n_blocks, 1u, 1u };
 
 #ifdef DEBUG_MODE 
-	input.print_matrix("mlp_fused_forward_input_matrix.log");
-	weights.print_matrix("mlp_fused_forward_weights_matrix.log");
-	// output_intermediate.print_matrix("mlp_fused_forward_output_intermediate_matrix.log");	
-	// output->print_matrix("mlp_fused_forward_output_matrix_pre.log");
+	input.print_matrix("mlp_fused_forward_input_matrix.log");   
+	weights.print_matrix("mlp_fused_forward_weights_matrix.log");  
+	// // output_intermediate.print_matrix("mlp_fused_forward_output_intermediat_pre.log") ;  //aligned 
+	// // output->print_matrix("mlp_fused_forward_output_matrix_pre.log");  // aligned 
 #endif 
 
 	check_shmem_error(cudaFuncSetAttribute(kernel_mlp_fused<WIDTH, N_ITERS, __half, ACTIVATION, INFERENCE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shmem_size));
@@ -645,9 +690,11 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 		output && output->layout() == RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major
 	);
 
-// #ifdef DEBUG_MODE 
-// 	output->print_matrix("mlp_fused_forward_output_matrix_post.log");  // shape as [16, 65536] 
-// #endif 
+// sep-11 确认下iter-2 后, 网络output 及每层post-激活值  output_intermediate 是否正确
+#ifdef DEBUG_MODE 
+//	output_intermediate.print_matrix("mlp_fused_forward_output_intermediat_post.log") ;
+	output->print_matrix("mlp_fused_forward_output_matrix_post.log");  // shape as [16, 65536] 
+#endif 
 
 }
 
@@ -731,7 +778,7 @@ std::unique_ptr<Context> FullyFusedMLP<T, WIDTH>::forward_impl(cudaStream_t stre
 	uint32_t batch_size = input.n();
 	auto forward = allocate_forward_buffers(stream, batch_size);
 	std::cout << "[DEBUG]: check mlp_fused_forward() calls. m_activation: " << to_string(m_activation) << " output_activation: " << to_string(m_output_activation) << std::endl ;
-
+	// m_activation==ReLU,  output_activation=None 
 	// ASSUMPTION: weight matrices & forward_tmp matrices are contiguous in memory
 	switch (m_activation) {
 		case Activation::None:        mlp_fused_forward<WIDTH, T, Activation::None, false>(       stream, m_output_activation, input_weight_matrix(use_inference_params), input, forward->hidden.at(0), output, m_n_hidden_matmuls); break;
@@ -881,7 +928,7 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 	// 计算 i->h 权重梯度 :  input_gradient_matrix a.k.a dW1 = \delta_1 *  x^T 
 	if (param_gradients_mode != GradientMode::Ignore) {
 		multi_streams.emplace_back(stream, 2);
-		// fc_multiply_split_k(handle, multi_streams.back().get(1), backward_tmp.at(backward_tmp_idx-1), input.transposed(), input_gradient_matrix(), split_k_factor, param_gradient_beta);
+		fc_multiply_split_k(handle, multi_streams.back().get(1), backward_tmp.at(backward_tmp_idx-1), input.transposed(), input_gradient_matrix(), split_k_factor, param_gradient_beta);
 	}
 	
 #if DEBUG_MODE 
