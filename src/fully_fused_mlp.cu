@@ -62,17 +62,25 @@ __global__ void sh2gmem(__half* device_mem, const __half* __restrict__ shmem, in
 
 __global__ void threadblock_shmem_print(const __half* __restrict__ shmem,  int shmem_size, const char* display_name)
 {
-	__half* host_mem = (__half*)malloc(shmem_size); 
-    __half* device_mem ; 
-	cudaMalloc(&device_mem, shmem_size);
-	const dim3 threads={32, 4, 1}
+	__half* device_mem ; 
+	__half* host_mem ; 
+	bool thread0 = ( threadIdx.x + threadIdx.y * blockDim.x == 0 ); 
+	if(thread0)
+	{
+		host_mem = (__half*)malloc(shmem_size); 
+		cudaMalloc(&device_mem, shmem_size);
+	}
+	__syncthreads() ;  // ensure memory is allocated before other threads using 
+	const dim3 threads={32, 4, 1} ; 
 	sh2gmem<<<1, threads>>>(device_mem, act_shmem, shmem_size/sizeof(__half));
 	cudaMemcpy(host_mem, device_mem, shmem_size, cudaMemcpyDeviceToHost); 
-	printf(" -------------------- %s ----------------\n", display_name ); 
-    for(int i=0; i<N; i++){
-        printf("%f ", __half2float(host_mem[i]) );
-    }
-    printf(" --------------- DONE ----------------- \n");
+	if(thread0){
+		printf(" -------------------- %s ----------------\n", display_name ); 
+		for(int i=0; i<N; i++){
+			printf("%f ", __half2float(host_mem[i]) );
+		}
+		printf(" --------------- DONE ----------------- \n");
+	}
     free(host_mem);
     cudaFree(device_mem);
 }
@@ -565,7 +573,7 @@ __global__ void kernel_mlp_fused(const Activation output_activation, const __hal
 		} else {
 			threadblock_input_layer_forward_dynamic<WIDTH, N_ITERS, OUT_T, nvcuda::wmma::col_major>(ACTIVATION, act_shmem, input + elem_idx, weights, !INFERENCE ? (out_intermediate + elem_idx * WIDTH) : nullptr, in_width, batch_size);
 		}
-	} else {  // go static !!! 
+	} else { 
 		// If the input has the same width & layout as the hidden layers, we can simply use the network's regular layer routine (with static size)
 		// instead of using the slower dynamic input layer routine.
 		// printf("[KERNEL DEBUG]: in kernel_mlp_fused(), go static branch");
@@ -573,7 +581,6 @@ __global__ void kernel_mlp_fused(const Activation output_activation, const __hal
 		threadblock_layer<WIDTH, N_ITERS, OUT_T>(ACTIVATION, act_shmem, weights, !INFERENCE ? (out_intermediate + elem_idx * WIDTH) : nullptr);
 	}
 
-	// print shmem Sep-22
 #ifdef DEBUG_MODE 
 	size_t shmem_size = sizeof(__half) * (16 + 16 * N_ITERS) * (WIDTH + 8); 
 	std::string display_name="1st_layer" + std::to_string(GridDim.x) ; 
