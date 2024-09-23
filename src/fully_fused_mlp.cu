@@ -663,7 +663,6 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 #ifdef DEBUG_MODE 
 	cudaMalloc(&first_layer_gpu_buffer, shmem_size * n_blocks); 
 	first_layer_host_buffer = (__half*)malloc(shmem_size * n_blocks);
-	__syncthreads(); // ensure memory are allocated before threads using 
 #endif 
 
 	check_shmem_error(cudaFuncSetAttribute(kernel_mlp_fused<WIDTH, N_ITERS, __half, ACTIVATION, INFERENCE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shmem_size));
@@ -685,15 +684,25 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 	);
 
 #ifdef DEBUG_MODE 
-	char display_name[20] = "1st_layer_shmem" ;
+    std::string root_path = "/workspace/tiny-rocm-nn/matrix_logs/";
+	std::string local_path = "1st_layer_shmem.log" ;
+	auto log_path = root_path + local_path ; 
+    std::ofstream logfile(log_path, std::ios::app);
+	auto status = logfile.is_open(); 
+	logfile << "Open " << local_path << " for logging " << std::endl; 
+	int N = shmem_size / sizeof(__half); 
 	cudaMemcpy(first_layer_host_buffer, first_layer_gpu_buffer, shmem_size*n_blocks , cudaMemcpyDeviceToHost); 
 	{
-		printf(" -------------------- %s ----------------\n", display_name ); 
+		std::cout << " -------------------- %s ----------------" << local_path << std::endl ; 
 		for(int i=0; i<N; i++){
-			printf("%f ", __half2float(first_layer_host_buffer[i]) );
+			// printf("%f ", __half2float(first_layer_host_buffer[i]) );
+			logfile <<  __half2float(first_layer_host_buffer[i]) << " ";
 		}
-		printf(" --------------- DONE ----------------- \n");
+		logfile << "\n" << std::endl ; 
 	}
+	logfile.close();
+	delete[] first_layer_host_buffer ; 
+	cudaFree(first_layer_gpu_buffer) ; 
 #endif 
 
 // sep-11 确认下iter-2 后, 网络output 及每层post-激活值  output_intermediate 是否正确
