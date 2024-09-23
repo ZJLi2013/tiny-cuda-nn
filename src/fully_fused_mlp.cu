@@ -49,7 +49,7 @@ void check_shmem_error(cudaError_t error) {
 	}
 }
 
-__global__ void sh2gmem(__half* device_mem, const __half* __restrict__ shmem, int N)
+__device__ void sh2gmem(__half* device_mem, const __half* __restrict__ shmem, int N)
 {
 	// block_level_thread_index=threadIdx.z×(blockDim.x×blockDim.y)+threadIdx.y×blockDim.x+threadIdx.x
 	// threadIdx.x, threadIdx.y, threadIdx.z are thread index within the block in x,y,z dimensions
@@ -58,31 +58,6 @@ __global__ void sh2gmem(__half* device_mem, const __half* __restrict__ shmem, in
     if(tid< N){
         device_mem[tid] = shmem[tid]; 
     }	
-}
-
-__global__ void threadblock_shmem_print(const __half* __restrict__ shmem,  int shmem_size, const char* display_name)
-{
-	__half* device_mem ; 
-	__half* host_mem ; 
-	bool thread0 = ( threadIdx.x + threadIdx.y * blockDim.x == 0 ); 
-	if(thread0)
-	{
-		host_mem = (__half*)malloc(shmem_size); 
-		cudaMalloc(&device_mem, shmem_size);
-	}
-	__syncthreads() ;  // ensure memory is allocated before other threads using 
-	const dim3 threads={32, 4, 1} ; 
-	sh2gmem<<<1, threads>>>(device_mem, act_shmem, shmem_size/sizeof(__half));
-	cudaMemcpy(host_mem, device_mem, shmem_size, cudaMemcpyDeviceToHost); 
-	if(thread0){
-		printf(" -------------------- %s ----------------\n", display_name ); 
-		for(int i=0; i<N; i++){
-			printf("%f ", __half2float(host_mem[i]) );
-		}
-		printf(" --------------- DONE ----------------- \n");
-	}
-    free(host_mem);
-    cudaFree(device_mem);
 }
 
 template <int WIDTH, int N_ITERS, typename OUT_T, bool BACKWARD=false>
@@ -540,7 +515,8 @@ __device__ void threadblock_write_output_static(const __half* __restrict__ act_s
 }
 
 template <int WIDTH, int N_ITERS, typename OUT_T, Activation ACTIVATION, bool INFERENCE>
-__global__ void kernel_mlp_fused(const Activation output_activation, const __half* __restrict__ input, const __half* __restrict__ weights, OUT_T* __restrict__ out_intermediate, OUT_T* __restrict__ out, const uint32_t output_stride, const uint32_t batch_size, const uint32_t in_width, const uint32_t out_width, const uint32_t n_hidden_matmuls, const nvcuda::wmma::layout_t input_layout, const nvcuda::wmma::layout_t output_layout) {
+__global__ void kernel_mlp_fused(const Activation output_activation, const __half* __restrict__ input, const __half* __restrict__ weights, OUT_T* __restrict__ out_intermediate, OUT_T* __restrict__ out, const uint32_t output_stride, const uint32_t batch_size, const uint32_t in_width, const uint32_t out_width, const uint32_t n_hidden_matmuls, const nvcuda::wmma::layout_t input_layout, const nvcuda::wmma::layout_t output_layout,
+	__half* first_layer_gpu_buffer) {
 	// `input` points to the input matrix. Can be any width.
 	// `weights` points to the weight matrices (contiguous in memory).
 	// `out_intermediate` points to the memory where intermediate activations should be written. When performing inference, a value of nullptr is expected (intermediate results are not written).
@@ -583,8 +559,9 @@ __global__ void kernel_mlp_fused(const Activation output_activation, const __hal
 
 #ifdef DEBUG_MODE 
 	size_t shmem_size = sizeof(__half) * (16 + 16 * N_ITERS) * (WIDTH + 8); 
-	std::string display_name="1st_layer" + std::to_string(GridDim.x) ; 
-	threadblock_shmem_print(act_shmem, shmem_size, display_name.c_str());
+	int N = shmem_size / sizeof(__half); 
+	__half* device_mem = first_layer_gpu_buffer + gridDim.x * N ; 
+	sh2gmem(device_mem, act_shmem, N);
 #endif 
 
 	//Sep-11: 对于n_hidden_matmuls==0, out_intermediate 跟新就发生在first-layer。输出不一致，就说明是这里的不一致
@@ -680,6 +657,15 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 	// // output->print_matrix("mlp_fused_forward_output_matrix_pre.log");  // aligned 
 #endif 
 
+	// add tmp gpu & host buffer for shmem print (Sep-23) 
+	__half* first_layer_gpu_buffer = nullptr ;
+	__half* first_layer_host_buffer = nullptr ; 
+#ifdef DEBUG_MODE 
+	cudaMalloc(&first_layer_gpu_buffer, shmem_size * n_blocks); 
+	first_layer_host_buffer = (__half*)malloc(shmem_size * n_blocks);
+	__syncthreads(); // ensure memory are allocated before threads using 
+#endif 
+
 	check_shmem_error(cudaFuncSetAttribute(kernel_mlp_fused<WIDTH, N_ITERS, __half, ACTIVATION, INFERENCE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shmem_size));
 	kernel_mlp_fused<WIDTH, N_ITERS, __half, ACTIVATION, INFERENCE><<<blocks, threads, shmem_size, stream>>>(
 		output_activation,
@@ -694,8 +680,21 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 		n_hidden_layers,
 		// The kernels operate with transposed layouts compared with the MLP code
 		input.layout() == RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major,
-		output && output->layout() == RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major
+		output && output->layout() == RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major,
+		first_layer_gpu_buffer
 	);
+
+#ifdef DEBUG_MODE 
+	char display_name[20] = "1st_layer_shmem" ;
+	cudaMemcpy(first_layer_host_buffer, first_layer_gpu_buffer, shmem_size*n_blocks , cudaMemcpyDeviceToHost); 
+	{
+		printf(" -------------------- %s ----------------\n", display_name ); 
+		for(int i=0; i<N; i++){
+			printf("%f ", __half2float(first_layer_host_buffer[i]) );
+		}
+		printf(" --------------- DONE ----------------- \n");
+	}
+#endif 
 
 // sep-11 确认下iter-2 后, 网络output 及每层post-激活值  output_intermediate 是否正确
 #ifdef DEBUG_MODE 
