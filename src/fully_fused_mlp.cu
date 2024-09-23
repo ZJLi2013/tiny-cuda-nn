@@ -561,6 +561,7 @@ __global__ void kernel_mlp_fused(const Activation output_activation, const __hal
 	size_t shmem_size = sizeof(__half) * (16 + 16 * N_ITERS) * (WIDTH + 8); 
 	int N = shmem_size / sizeof(__half); 
 	__half* device_mem = first_layer_gpu_buffer + gridDim.x * N ; 
+	printf("call sh2gmem\n"); 
 	sh2gmem(device_mem, act_shmem, N);
 #endif 
 
@@ -689,16 +690,17 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 	auto log_path = root_path + local_path ; 
     std::ofstream logfile(log_path, std::ios::app);
 	auto status = logfile.is_open(); 
-	logfile << "Open " << local_path << " for logging " << std::endl; 
+	logfile << "Open " << local_path << " for shmem logging " << std::endl; 
+	std::cout << "Open " << local_path << " for shmem logging " << std::endl; 
 	int N = shmem_size / sizeof(__half); 
 	cudaMemcpy(first_layer_host_buffer, first_layer_gpu_buffer, shmem_size*n_blocks , cudaMemcpyDeviceToHost); 
 	{
-		std::cout << " -------------------- %s ----------------" << local_path << std::endl ; 
-		for(int i=0; i<N; i++){
-			// printf("%f ", __half2float(first_layer_host_buffer[i]) );
-			logfile <<  __half2float(first_layer_host_buffer[i]) << " ";
+		for(int i=0; i< 16 + 16 * N_ITERS ; ++i){
+			for(int j=0; j <  WIDTH + SKEW; ++j){
+				logfile <<  __half2float(first_layer_host_buffer[i]) << " ";
+			}
+			logfile << "\n" << std::endl; 
 		}
-		logfile << "\n" << std::endl ; 
 	}
 	logfile.close();
 	delete[] first_layer_host_buffer ; 
