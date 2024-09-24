@@ -55,12 +55,10 @@ __device__ void sh2gmem(__half* device_mem, const __half* __restrict__ shmem, in
 	// threadIdx.x, threadIdx.y, threadIdx.z are thread index within the block in x,y,z dimensions
 	// blockDim.x, blockDim.y, blockDim.z are dimension/size of the t-block. a.k.a 32, 4, 1 
 	int tid =  threadIdx.x + threadIdx.y * blockDim.x ; 
-	printf("values from shmem:\n");
     if(tid< N){
-		printf("%f", __half2float(shmem[tid]));  // TODO: why get all zeros ? 
+		// printf("%f", __half2float(shmem[tid]));  // TODO: why get all zeros ? 
         device_mem[tid] = shmem[tid]; 
     }
-	printf("\n");
 }
 
 template <int WIDTH, int N_ITERS, typename OUT_T, bool BACKWARD=false>
@@ -519,7 +517,7 @@ __device__ void threadblock_write_output_static(const __half* __restrict__ act_s
 
 template <int WIDTH, int N_ITERS, typename OUT_T, Activation ACTIVATION, bool INFERENCE>
 __global__ void kernel_mlp_fused(const Activation output_activation, const __half* __restrict__ input, const __half* __restrict__ weights, OUT_T* __restrict__ out_intermediate, OUT_T* __restrict__ out, const uint32_t output_stride, const uint32_t batch_size, const uint32_t in_width, const uint32_t out_width, const uint32_t n_hidden_matmuls, const nvcuda::wmma::layout_t input_layout, const nvcuda::wmma::layout_t output_layout,
-	__half* first_layer_gpu_buffer) {
+	__half* first_layer_pre_gpu_buffer, __half* first_layer_post_gpu_buffer) {
 	// `input` points to the input matrix. Can be any width.
 	// `weights` points to the weight matrices (contiguous in memory).
 	// `out_intermediate` points to the memory where intermediate activations should be written. When performing inference, a value of nullptr is expected (intermediate results are not written).
@@ -555,18 +553,22 @@ __global__ void kernel_mlp_fused(const Activation output_activation, const __hal
 		// If the input has the same width & layout as the hidden layers, we can simply use the network's regular layer routine (with static size)
 		// instead of using the slower dynamic input layer routine.
 		threadblock_load_input_static<WIDTH, N_ITERS>(act_shmem, input + elem_idx * WIDTH);
+#ifdef DEBUG_MODE 
+	size_t shmem_size = sizeof(__half) * (16 + 16 * N_ITERS) * (WIDTH + 8); 
+	int N = shmem_size / sizeof(__half); 
+	if (threadIdx.x == 0 && threadIdx.y == 0  ){
+		printf("[KERNEL DEBUG]: in kerneL_mlp_fused(), copy %d elements from tblock-%d to global gpu mem\n", N, blockIdx.x);  
+	}
+	__half* pre_device_mem = (__half*) (first_layer_pre_gpu_buffer + blockIdx.x * N) ; 
+	sh2gmem(pre_device_mem, act_shmem, N); 
+#endif 
 		threadblock_layer<WIDTH, N_ITERS, OUT_T>(ACTIVATION, act_shmem, weights, !INFERENCE ? (out_intermediate + elem_idx * WIDTH) : nullptr);
 	}
 
 // Sep-23 verify shmem after threadblock_layer() is not aligned. 
 #ifdef DEBUG_MODE 
-	size_t shmem_size = sizeof(__half) * (16 + 16 * N_ITERS) * (WIDTH + 8); 
-	int N = shmem_size / sizeof(__half); 
-	if (threadIdx.x == 0 && threadIdx.y == 0  ){
-		printf("[KERNEL DEBUG]: in kerneL_mlp_fused(), copy %d elements from tblock: %d to global gpu mem\n", N, blockIdx.x);  
-	}
-	__half* device_mem = first_layer_gpu_buffer + blockIdx.x * N ; 
-	sh2gmem(device_mem, act_shmem, N);
+	__half* post_device_mem = first_layer_post_gpu_buffer + blockIdx.x * N ; 
+	sh2gmem(post_device_mem, act_shmem, N);
 #endif 
 
 	//Sep-11: 对于n_hidden_matmuls==0, out_intermediate 跟新就发生在first-layer。输出不一致，就说明是这里的不一致
@@ -653,7 +655,7 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 	const dim3 blocks = { n_blocks, 1u, 1u };
 
 	std::cout << "[DEBUG] mlp_fused_forward: BS=" << batch_size << " WIDTH=" << WIDTH << " in_width=" << in_width << " Activation op= " << to_string(output_activation) << " sm_size=" << shmem_size << " nblocks= " << n_blocks << std::endl ;    
-	// 256, 64,  64, ActOp=None, 
+	// 256, 64,  64, ActOp=None, 20736  2 
 
 #ifdef DEBUG_MODE 
 	input.print_matrix("mlp_fused_forward_input_matrix.log");   
@@ -663,11 +665,14 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 #endif 
 
 	// add tmp gpu & host buffer for shmem print (Sep-23) 
-	__half* first_layer_gpu_buffer = nullptr ;
-	__half* first_layer_host_buffer = nullptr ; 
+	__half* first_layer_pre_gpu_buffer = nullptr ;
+	__half* first_layer_post_gpu_buffer = nullptr ;
+	__half* first_layer_pre_host_buffer = nullptr ; 
+	__half* first_layer_post_host_buffer = nullptr ; 
 #ifdef DEBUG_MODE 
-	cudaMalloc(&first_layer_gpu_buffer, shmem_size * n_blocks); 
-	first_layer_host_buffer = (__half*)malloc(shmem_size * n_blocks);
+	cudaMalloc(&first_layer_post_gpu_buffer, shmem_size * n_blocks); 
+	first_layer_pres_host_buffer = (__half*)malloc(shmem_size * n_blocks);
+	first_layer_post_host_buffer = (__half*)malloc(shmem_size * n_blocks);
 #endif 
 
 	check_shmem_error(cudaFuncSetAttribute(kernel_mlp_fused<WIDTH, N_ITERS, __half, ACTIVATION, INFERENCE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shmem_size));
@@ -685,30 +690,48 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 		// The kernels operate with transposed layouts compared with the MLP code
 		input.layout() == RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major,
 		output && output->layout() == RM ? nvcuda::wmma::mem_col_major : nvcuda::wmma::mem_row_major,
-		first_layer_gpu_buffer
+		first_layer_pre_gpu_buffer, 
+		first_layer_post_gpu_buffer
 	);
 
 #ifdef DEBUG_MODE 
     std::string root_path = "/workspace/tiny-rocm-nn/matrix_logs/";
-	std::string local_path = "1st_layer_shmem.log" ;
-	auto log_path = root_path + local_path ; 
-    std::ofstream logfile(log_path, std::ios::app);
-	auto status = logfile.is_open(); 
+	std::string post_local_path = "1st_layer_shmem_post.log" ;
+	std::string pre_local_path = "1st_layer_shmem_pre.log" ;	
+	auto post_log_path = root_path + post_local_path ; 
+    std::ofstream post_logfile(post_log_path, std::ios::app);
+	auto pre_log_path = root_path + pre_local_path ; 
+    std::ofstream pre_logfile(pre_log_path, std::ios::app);
+	auto status_post = post_logfile.is_open(); 
+	auto status_pre = pre_logfile.is_open();  
 	int N = shmem_size / sizeof(__half); 
-	cudaMemcpy(first_layer_host_buffer, first_layer_gpu_buffer, shmem_size*n_blocks , cudaMemcpyDeviceToHost); 
-	logfile << "Open " << local_path << " for shmem logging " << std::endl; 
-	std::cout << "Open " << local_path << " for shmem logging " << std::endl; 
+	cudaMemcpy(first_layer_pre_host_buffer, first_layer_pre_gpu_buffer, shmem_size*n_blocks , cudaMemcpyDeviceToHost); 
+	cudaMemcpy(first_layer_post_host_buffer, first_layer_post_gpu_buffer, shmem_size*n_blocks , cudaMemcpyDeviceToHost); 
+	post_logfile << "Open " << post_local_path << " for shmem logging " << std::endl; 
+	std::cout << "Open " << post_local_path << " for shmem logging " << std::endl; 
+	pre_logfile << "Open " << pre_local_path << " for shmem logging " << std::endl; 
+	std::cout << "Open " << pre_local_path << " for shmem logging " << std::endl; 
 	{
-		for(int i=0; i< 16 + 16 * N_ITERS ; ++i){
-			for(int j=0; j <  WIDTH + SKEW; ++j){
-				logfile <<  __half2float(first_layer_host_buffer[i]) << " ";
+		for(int b=0 ;  b < n_blocks ; ++b){
+			auto elements_per_block = N * b ; 
+			for(int i=0; i< 16 + 16 * N_ITERS ; ++i){
+				for(int j=0; j <  WIDTH + SKEW; ++j){
+					pre_logfile <<  __half2float(first_layer_pre_host_buffer[elements_per_block + i * (WIDTH + SKEW) + j]) << " ";
+					post_logfile <<  __half2float(first_layer_post_host_buffer[elements_per_block + i * (WIDTH + SKEW) + j]) << " ";
+				}
+				pre_logfile << "\n" << std::endl; 
+				post_logfile << "\n" << std::endl; 
 			}
-			logfile << "\n" << std::endl; 
+			pre_logfile << "\n" << std::endl; 
+			post_logfile << "\n" << std::endl ; 
 		}
 	}
-	logfile.close();
-	delete[] first_layer_host_buffer ; 
-	cudaFree(first_layer_gpu_buffer) ; 
+	pre_logfile.close() 
+	post_logfile.close();
+	delete[] first_layer_pre_host_buffer ; 
+	cudaFree(first_layer_pre_gpu_buffer) ; 
+	delete[] first_layer_post_host_buffer ; 
+	cudaFree(first_layer_post_gpu_buffer) ; 
 #endif 
 
 // sep-11 确认下iter-2 后, 网络output 及每层post-激活值  output_intermediate 是否正确
