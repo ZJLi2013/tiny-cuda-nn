@@ -55,9 +55,12 @@ __device__ void sh2gmem(__half* device_mem, const __half* __restrict__ shmem, in
 	// threadIdx.x, threadIdx.y, threadIdx.z are thread index within the block in x,y,z dimensions
 	// blockDim.x, blockDim.y, blockDim.z are dimension/size of the t-block. a.k.a 32, 4, 1 
 	int tid =  threadIdx.x + threadIdx.y * blockDim.x ; 
+	printf("values from shmem:\n");
     if(tid< N){
+		printf("%f", __half2float(shmem[tid]));  // TODO: why get all zeros ? 
         device_mem[tid] = shmem[tid]; 
-    }	
+    }
+	printf("\n");
 }
 
 template <int WIDTH, int N_ITERS, typename OUT_T, bool BACKWARD=false>
@@ -537,13 +540,12 @@ __global__ void kernel_mlp_fused(const Activation output_activation, const __hal
 	// Each block computes exactly one 16-element chunk of the batch.
 	const uint32_t elem_idx = 16 * blockIdx.x * N_ITERS;
 
-	if (threadIdx.x == 0 ){
+	if (threadIdx.x == 0 && threadIdx.y == 0  ){
 		printf("[KERNEL DEBUG]: in kernel_mlp_fused(), blockIdx.x=%d, elem_idx=%d,  in_width=%d , WIDTH=%d, N_ITERS=%d\n", blockIdx.x, elem_idx, in_width, WIDTH, N_ITERS) ;
 	}
 
 	// First layer
 	if (input_layout == nvcuda::wmma::mem_col_major || in_width != WIDTH) {
-		// printf("[KERNEL DEBUG]: in kernel_mlp_fused(), go dynamic branch") ;
 		if (input_layout == nvcuda::wmma::mem_row_major) {
 			threadblock_input_layer_forward_dynamic<WIDTH, N_ITERS, OUT_T, nvcuda::wmma::row_major>(ACTIVATION, act_shmem, input + elem_idx * in_width, weights, !INFERENCE ? (out_intermediate + elem_idx * WIDTH) : nullptr, in_width, batch_size);
 		} else {
@@ -552,16 +554,18 @@ __global__ void kernel_mlp_fused(const Activation output_activation, const __hal
 	} else { 
 		// If the input has the same width & layout as the hidden layers, we can simply use the network's regular layer routine (with static size)
 		// instead of using the slower dynamic input layer routine.
-		// printf("[KERNEL DEBUG]: in kernel_mlp_fused(), go static branch");
 		threadblock_load_input_static<WIDTH, N_ITERS>(act_shmem, input + elem_idx * WIDTH);
 		threadblock_layer<WIDTH, N_ITERS, OUT_T>(ACTIVATION, act_shmem, weights, !INFERENCE ? (out_intermediate + elem_idx * WIDTH) : nullptr);
 	}
 
+// Sep-23 verify shmem after threadblock_layer() is not aligned. 
 #ifdef DEBUG_MODE 
 	size_t shmem_size = sizeof(__half) * (16 + 16 * N_ITERS) * (WIDTH + 8); 
 	int N = shmem_size / sizeof(__half); 
-	__half* device_mem = first_layer_gpu_buffer + gridDim.x * N ; 
-	printf("call sh2gmem\n"); 
+	if (threadIdx.x == 0 && threadIdx.y == 0  ){
+		printf("[KERNEL DEBUG]: in kerneL_mlp_fused(), copy %d elements from tblock: %d to global gpu mem\n", N, blockIdx.x);  
+	}
+	__half* device_mem = first_layer_gpu_buffer + blockIdx.x * N ; 
 	sh2gmem(device_mem, act_shmem, N);
 #endif 
 
@@ -646,10 +650,10 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 		shmem_size = std::max(shmem_size, sizeof(__half) * (WIDTH + 16) * (in_width + INPUT_SKEW));
 	}
 
-	std::cout << "[DEBUG] mlp_fused_forward: BS=" << batch_size << " WIDTH=" << WIDTH << " in_width=" << in_width << " Activation op= " << to_string(output_activation) << "sm_size=" << shmem_size << std::endl ;    // 64,  64, ActOp=None
-
-
 	const dim3 blocks = { n_blocks, 1u, 1u };
+
+	std::cout << "[DEBUG] mlp_fused_forward: BS=" << batch_size << " WIDTH=" << WIDTH << " in_width=" << in_width << " Activation op= " << to_string(output_activation) << " sm_size=" << shmem_size << " nblocks= " << n_blocks << std::endl ;    
+	// 256, 64,  64, ActOp=None, 
 
 #ifdef DEBUG_MODE 
 	input.print_matrix("mlp_fused_forward_input_matrix.log");   
@@ -690,10 +694,10 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 	auto log_path = root_path + local_path ; 
     std::ofstream logfile(log_path, std::ios::app);
 	auto status = logfile.is_open(); 
-	logfile << "Open " << local_path << " for shmem logging " << std::endl; 
-	std::cout << "Open " << local_path << " for shmem logging " << std::endl; 
 	int N = shmem_size / sizeof(__half); 
 	cudaMemcpy(first_layer_host_buffer, first_layer_gpu_buffer, shmem_size*n_blocks , cudaMemcpyDeviceToHost); 
+	logfile << "Open " << local_path << " for shmem logging " << std::endl; 
+	std::cout << "Open " << local_path << " for shmem logging " << std::endl; 
 	{
 		for(int i=0; i< 16 + 16 * N_ITERS ; ++i){
 			for(int j=0; j <  WIDTH + SKEW; ++j){
