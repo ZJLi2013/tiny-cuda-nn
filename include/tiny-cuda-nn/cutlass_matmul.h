@@ -483,6 +483,10 @@ void fc_multiply_split_k(cudaStream_t stream, const GPUMatrix<TypeA, LayoutA>& A
 		split_k_slices
 	};
 
+	// M=16, K=256, N=64
+	// A [16, 256], stride=16
+	// B [256, 64], stride=64
+	// C [16, 64], stride=64
 	fc_multiply_split_k_impl<Gemm>(stream, arguments, M, N, K);
 }
 
