@@ -32,7 +32,7 @@ inline void printCublasMatrix(const T* matrix, int rows, int cols, const char* m
 }
 
 template<typename T> 
-inline void printCutlassMatrix(const T* matrix, int rows, int cols, const char* matrix_name) {
+inline void printCutlassMatrix(const T* matrix, int rows, int cols, int layout, const char* matrix_name) {
     std::string root_path = "/workspace/tiny-cuda-nn/matrix_logs/";
     std::string local_path = std::string(matrix_name) + ".log"; 
     auto log_path = root_path + local_path ; 
@@ -44,9 +44,17 @@ inline void printCutlassMatrix(const T* matrix, int rows, int cols, const char* 
     for (int i = 0; i < rows; ++i) {
         for (int j = 0; j < cols; ++j) {
             if( std::is_same<T, float>::value){
-                logfile << static_cast<float>(cpu_data[i * cols + j]) << " ";
+                if (layout == 0 ){  // layout RM == 0 
+                    logFile << static_cast<float>(cpu_data[i * cols + j] ) << " " ;
+                }else{   // layout CM == 1 
+                    logFile << static_cast<float>(cpu_data[i + j * rows ] ) << " " ;
+                }
             }else if(std::is_same<T, __half>::value){
-                logfile << __half2float(cpu_data[i * cols + j]) << " ";
+                if (layout == "RM"){
+                    logFile << __half2float(cpu_data[i * cols + j] ) << " " ;
+                }else{   // CM 
+                    logFile << __half2float(cpu_data[i + j * rows ] ) << " " ;
+                }
             }else{
                 std::cerr << "not supported data format in printCublasMatrix" << std::endl;  
             }
