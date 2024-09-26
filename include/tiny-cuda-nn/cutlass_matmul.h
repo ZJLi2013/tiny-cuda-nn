@@ -333,7 +333,7 @@ void fc_multiply_impl(cudaStream_t stream, const typename Gemm::Arguments& args)
 }
 
 template <class Gemm>
-void fc_multiply_split_k_impl(cudaStream_t stream, const typename Gemm::Arguments& args) {
+void fc_multiply_split_k_impl(cudaStream_t stream, const typename Gemm::Arguments& args, const int m, const int n, const int k) {
 	// Using the arguments, query for extra workspace required for matrix multiplication computation
 	size_t workspace_size = Gemm::get_workspace_size(args);
 
@@ -350,12 +350,25 @@ void fc_multiply_split_k_impl(cudaStream_t stream, const typename Gemm::Argument
 	CUTLASS_CHECK_THROW(status);
 #ifdef DEBUG_MODE
 	std::cout << "[DEBUG] cutlass split_k_impl print " << std::endl; 
-	using matA = args.ref_A ;
-	using matB = args.ref_B ;
-	using matC = args.ref_C ; 
-	printCutlassMatrix<TypeCompute>((TypeCompute*)matA.data(), matA.rows(), matA.cols(), static_cast<int>(matA.layout()), "split_k_matA");
-	printCutlassMatrix<TypeCompute>((TypeCompute*)matB.data(), matB.rows(), matB.cols(), static_cast<int>(matB.layout()), "split_k_matB");
-	printCutlassMatrix<TypeCompute>((TypeCompute*)matC.data(), matC.rows(), matC.cols(), static_cast<int>(matC.layout()), "split_k_matC");
+	auto& matA = args.ref_A ;
+	auto& matB = args.ref_B ;
+	auto& matC = args.ref_C ; 
+	int layoutA = 0 ;
+	int layoutB = 0 ;
+	int layoutC = 0 ;
+	if( std::is_same<decltype(matA.layout()), cutlass::layout::ColumnMajor>::value ){ layoutA = 1;  printf("layoutA = CM");  }
+	if( std::is_same<decltype(matB.layout()), cutlass::layout::ColumnMajor>::value ){ layoutB = 1; }
+	if( std::is_same<decltype(matC.layout()), cutlass::layout::ColumnMajor>::value ){ layoutC = 1; }
+	// printCutlassMatrix() is an external api, so TCNN::TypeCompute & cutlass is not visible  
+	if ( std::is_same<TypeCompute, cutlass::half_t>::value ){ 	
+		printCutlassMatrix<__half>(reinterpret_cast<const __half*>(matA.data()), m, k, layoutA, "split_k_matA");
+		printCutlassMatrix<__half>(reinterpret_cast<const __half*>(matB.data()), k, n, layoutB, "split_k_matB");
+		printCutlassMatrix<__half>(reinterpret_cast<const __half*>(matC.data()), m, n, layoutC, "split_k_matC");
+	}else if( std::is_same<TypeCompute, float>::value ){ 	
+		printCutlassMatrix<float>((float*)matA.data(), m, k, layoutA, "split_k_matA");
+		printCutlassMatrix<float>((float*)matB.data(), k, n, layoutB, "split_k_matB");
+		printCutlassMatrix<float>((float*)matC.data(), m, n, layoutC, "split_k_matC");
+	}
 #endif 
 }
 
@@ -490,7 +503,7 @@ void fc_multiply_split_k(cudaStream_t stream, const GPUMatrix<TypeA, LayoutA>& A
 	// A [16, 256], stride=16
 	// B [256, 64], stride=64
 	// C [16, 64], stride=64
-	fc_multiply_split_k_impl<Gemm>(stream, arguments);
+	fc_multiply_split_k_impl<Gemm>(stream, arguments, M, N, K);
 }
 
 template <typename config, typename TypeA, MatrixLayout LayoutA, typename TypeB, MatrixLayout LayoutB, typename TypeC, typename TypeD>

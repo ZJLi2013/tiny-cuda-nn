@@ -41,19 +41,20 @@ inline void printCutlassMatrix(const T* matrix, int rows, int cols, int layout, 
     std::ofstream logfile(log_path, std::ios::app);
     auto status = logfile.is_open(); 
     logfile << "Open " << local_path << " for logging " << " [ " << rows << " , " << cols << " ]" << std::endl; 
+    printf("[DEBUG]:  layout = %d\n", layout); 
     for (int i = 0; i < rows; ++i) {
         for (int j = 0; j < cols; ++j) {
             if( std::is_same<T, float>::value){
                 if (layout == 0 ){  // layout RM == 0 
-                    logFile << static_cast<float>(cpu_data[i * cols + j] ) << " " ;
+                    logfile << static_cast<float>(cpu_data[i * cols + j] ) << " " ;
                 }else{   // layout CM == 1 
-                    logFile << static_cast<float>(cpu_data[i + j * rows ] ) << " " ;
+                    logfile << static_cast<float>(cpu_data[i + j * rows ] ) << " " ;
                 }
             }else if(std::is_same<T, __half>::value){
-                if (layout == "RM"){
-                    logFile << __half2float(cpu_data[i * cols + j] ) << " " ;
+                if (layout == 0 ){
+                    logfile << __half2float(cpu_data[i * cols + j] ) << " " ;
                 }else{   // CM 
-                    logFile << __half2float(cpu_data[i + j * rows ] ) << " " ;
+                    logfile << __half2float(cpu_data[i + j * rows ] ) << " " ;
                 }
             }else{
                 std::cerr << "not supported data format in printCublasMatrix" << std::endl;  
