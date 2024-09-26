@@ -342,33 +342,6 @@ void OurSplitGemm(cublasHandle_t handle,
     }
 };
 
-template<T, MatrixLayout Layout>
-void cublas2gpuMat(T* C, GPUMatrix<T, Layout>& gpuMat, int m, int n){
-    //  'C' is the output matrix from cuBLAS in column-major format
-    if (Layout == MatrixLayout::CM){
-        cudaMemcpy(gpuMat.m_data, C, m * n * sizeof(T), cudaMemcpyDeviceToDevice);
-    }else if(Layout == MatrixLayout::RM){  // transpose C[m, n] into gpuMat[n, m]
-        const T alpha = 1.0f ;
-        const T beta = 0.0f ; 
-        auto status = cublasGeam(handle, 
-            CUBLAS_OP_T,   // set transpose on the matrix you want to transpose, here as input_mat A
-            CUBLAS_OP_N,   // no transpose on input_mat B 
-            n,              // output_mat C's rows
-            m,          // output_mat C's cols
-            &alpha, 
-            C,          // the input_mat A 
-            m,          // lda of C 
-            &beta,      //
-            nullptr,    // input_mat B not used 
-            n,          // lda of input_mat B
-            gpuMat.m_data,  // transposed_mat 
-            n,         // lda of transpose_mat
-            ) ; 
-        if(status != CUBLAS_STATUS_SUCCESS){ printf("cublas tranposed failed\n");}
-    }
-}
-
-
 template <typename TypeA, MatrixLayout LayoutA, typename TypeB, MatrixLayout LayoutB, typename TypeC, MatrixLayout LayoutC, typename TypeD, MatrixLayout LayoutD>
 void fc_multiply(cublasHandle_t &handle, cudaStream_t stream, const GPUMatrix<TypeA, LayoutA>& A, const GPUMatrix<TypeB, LayoutB>& B, const GPUMatrix<TypeC, LayoutC>& C, GPUMatrix<TypeD, LayoutD>& D, Activation act = Activation::None, bool transfer = false, bool sum_source = false) {
 
@@ -440,7 +413,8 @@ void fc_multiply(cublasHandle_t &handle, cudaStream_t stream, const GPUMatrix<Ty
 	fc_multiply(handle, stream, A, B, D, D, act);
 }
 
-__global__ void convertColumnMajorToRowMajorKernel(float* matrix_col_major, float* matrix_row_major, int rows, int cols) {
+template<T>
+__global__ void convertColumnMajorToRowMajorKernel(T* matrix_col_major, T* matrix_row_major, int rows, int cols) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     if (i < rows && j < cols) {
@@ -450,7 +424,8 @@ __global__ void convertColumnMajorToRowMajorKernel(float* matrix_col_major, floa
     }
 }
 
-void convertColumnMajorToRowMajor_GPU(float* d_matrix_col_major, float* d_matrix_row_major, int rows, int cols) {
+template<typename T>
+void convertColumnMajorToRowMajor_GPU(T* d_matrix_col_major, T* d_matrix_row_major, int rows, int cols) {
     dim3 blockSize(16, 16);  // 16x16 threads per block
     dim3 gridSize((rows + blockSize.x - 1) / blockSize.x, (cols + blockSize.y - 1) / blockSize.y);
     convertColumnMajorToRowMajorKernel<<<gridSize, blockSize>>>(d_matrix_col_major, d_matrix_row_major, rows, cols);
