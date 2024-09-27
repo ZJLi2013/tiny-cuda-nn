@@ -340,9 +340,10 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_backward(
 
 	int shmem_size = sizeof(__half) * ((16 * N_ITERS) * (WIDTH + SKEW)); // WIDTH rows of input and 16 * threads.z rows of weights
 	const dim3 blocks = { n_blocks, 1u, 1u };
-
+	
+#ifdef DEBUG_MODE 
 	std::cout << "[DEBUG] in mlp_fused_backward(), ACTIVATION= " << to_string(ACTIVATION) << std::endl; 
-
+#endif 
 	// The kernels operate with transposed layouts compared with the MLP code
 	if (dL_doutput.layout() == RM) {
 		check_shmem_error(cudaFuncSetAttribute(kernel_mlp_fused_backward<WIDTH, N_ITERS, ACTIVATION, nvcuda::wmma::col_major>, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem_size));
@@ -560,9 +561,11 @@ __global__ void kernel_mlp_fused(const Activation output_activation, const __hal
 	// Each block computes exactly one 16-element chunk of the batch.
 	const uint32_t elem_idx = 16 * blockIdx.x * N_ITERS;
 
+#ifdef DEBUG_MODE 
 	if (threadIdx.x == 0 && threadIdx.y == 0  ){
 		printf("[KERNEL DEBUG]: in kernel_mlp_fused(), blockIdx.x=%d, elem_idx=%d,  in_width=%d , WIDTH=%d, N_ITERS=%d\n", blockIdx.x, elem_idx, in_width, WIDTH, N_ITERS) ;
 	}
+#endif 
 
 	// First layer
 	if (input_layout == nvcuda::wmma::mem_col_major || in_width != WIDTH) {
@@ -672,10 +675,9 @@ std::enable_if_t<std::is_same<__half, T>::value> mlp_fused_forward(
 
 	const dim3 blocks = { n_blocks, 1u, 1u };
 
+#ifdef DEBUG_MODE 
 	std::cout << "[DEBUG] mlp_fused_forward: BS=" << batch_size << " WIDTH=" << WIDTH << " in_width=" << in_width << " Activation op= " << to_string(output_activation) << " sm_size=" << shmem_size << " nblocks= " << n_blocks << std::endl ;    
 	// 256, 64,  64, ActOp=None, 20736  2 
-
-#ifdef DEBUG_MODE 
 	input.print_matrix("mlp_fused_forward_input_matrix.log");   
 	weights.print_matrix("mlp_fused_forward_weights_matrix.log");  
 	// // output_intermediate.print_matrix("mlp_fused_forward_output_intermediat_pre.log") ;  //aligned 
@@ -822,7 +824,7 @@ std::unique_ptr<Context> FullyFusedMLP<T, WIDTH>::forward_impl(cudaStream_t stre
 	// Make sure our temporary buffers have the correct size for the given batch size
 	uint32_t batch_size = input.n();
 	auto forward = allocate_forward_buffers(stream, batch_size);
-	std::cout << "[DEBUG]: check mlp_fused_forward() calls. m_activation: " << to_string(m_activation) << " output_activation: " << to_string(m_output_activation) << std::endl ;
+//	std::cout << "[DEBUG]: check mlp_fused_forward() calls. m_activation: " << to_string(m_activation) << " output_activation: " << to_string(m_output_activation) << std::endl ;
 	// m_activation==ReLU,  output_activation=None 
 	// ASSUMPTION: weight matrices & forward_tmp matrices are contiguous in memory
 	switch (m_activation) {
@@ -927,15 +929,6 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 	// Only let the fully fused kernel compute gradients w.r.t. the input, if the input layer has the same size & layout as the other layers
 	auto dL_dinput_fused = input.m() == forward.hidden.at(0).m() && input.layout() == CM ? dL_dinput : nullptr;
 
-	std::cout << "[DEBUG]: in backward_impl m_n_hidden_matmuls= " << m_n_hidden_matmuls  \
-			 << " m_output_width=" << m_output_width \
-			 << " dL_dinput_fused=" << dL_dinput_fused \
-			 << "param_gradient_beta= " << param_gradient_beta << std::endl; 
-			 // m_n_hidden_matmuls = 0 
-			 // m_output_width = 3
-			 // dL_dinput_fused = 0 
-			 // param_gradient_beta = 0 
-
 	// ASSUMPTION: weight matrices & forward_tmp matrices are contiguous in memory
 	switch (m_activation) {
 		case Activation::None:        mlp_fused_backward<WIDTH, T, Activation::None>(       stream, input_weight_matrix(use_inference_params), weight_matrix_at(use_inference_params, 0), tmp_dL_doutput, backward_tmp.at(backward_tmp_idx), forward.hidden.at(0), dL_dinput_fused, m_n_hidden_matmuls); break;
@@ -950,6 +943,10 @@ void FullyFusedMLP<T, WIDTH>::backward_impl(
 	} // 计算loss相对 last-hidden layer post-act 的 delta in general, 对于hidden_layer=1, 实际就是 delta_1 
 
 #if DEBUG_MODE 
+	std::cout << "[DEBUG]: in backward_impl m_n_hidden_matmuls= " << m_n_hidden_matmuls  \
+			 << " m_output_width=" << m_output_width \
+			 << " dL_dinput_fused=" << dL_dinput_fused \
+			 << "param_gradient_beta= " << param_gradient_beta << std::endl; //  0 3 0  0 
 	(backward_tmp.at(backward_tmp_idx)).print_matrix("backward_impl_delta_1.log");  
 #endif 	
 

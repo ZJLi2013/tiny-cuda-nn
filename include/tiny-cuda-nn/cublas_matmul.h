@@ -303,7 +303,7 @@ void OurSplitGemm(cublasHandle_t handle,
 {
     cudaDataType_t dataType = getCUDADatatype(typeid(network_precision_t));
     if (split_k_slices == 1){
-        std::cout << "[DEBUG] split_k_slice==1" << std::endl; 
+//        std::cout << "[DEBUG] split_k_slice==1" << std::endl; 
         cublasStatus_t status = cublasGemmEx(handle, TransA, TransB,
                                             m, n, k,
                                             alpha,
@@ -413,7 +413,7 @@ void fc_multiply(cublasHandle_t &handle, cudaStream_t stream, const GPUMatrix<Ty
 	fc_multiply(handle, stream, A, B, D, D, act);
 }
 
-template<T>
+template<typename T>
 __global__ void convertColumnMajorToRowMajorKernel(T* matrix_col_major, T* matrix_row_major, int rows, int cols) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -482,7 +482,7 @@ void fc_multiply_split_k(cublasHandle_t handle, cudaStream_t stream, const GPUMa
         CUDA_CHECK_THROW(cudaMalloc((void**)&C2, C.rows() * C.cols() * sizeof(network_precision_t))); // interpret C2 as col-major
         int ldc2 = C.rows(); 
         OurSplitGemm<network_precision_t>(handle, TransA, TransB, M, N, K, &alpha, A.data(), lda, B.data(), ldb, &half_beta, C2, ldc2, split_k_slices); 
-        convertColumnMajorToRowMajor_GPU(C2, C, C.rows(), C.cols()); 
+        convertColumnMajorToRowMajor_GPU(C2, C.data(), C.rows(), C.cols()); 
         CUDA_CHECK_THROW(cudaFree(C2));
     }
 

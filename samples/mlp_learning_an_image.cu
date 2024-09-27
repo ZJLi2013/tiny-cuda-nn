@@ -160,17 +160,6 @@ int main(int argc, char* argv[]) {
 		// First step: load an image that we'd like to learn
 		int width, height;
 		GPUMemory<float> image = load_image(argv[1], width, height);   // 256, 256 
-		// // /********************************  for benchmark purpose  *************************/ 
-		// int width = 256;
-		// int height = 256 ; 
-		// GPUMemory<float> image(width * height * 4); 
-		// std::srand(static_cast<unsigned>(std::time(0)));
-		// float* host_data = new float[width * height];
-		// for(int i=0; i< width * height; ++i){
-		// 		// host_data[i] = std::rand() % 100 ;  // generate rand integers 
-		// }
-		// image.copy_from_host(host_data);
-		// std::cout << "create dummy data and fill in image on device done" << std::endl ; 
 
 		// Second step: create a cuda texture out of this image. It'll be used to generate training data efficiently on the fly
 		cudaResourceDesc resDesc;
@@ -228,7 +217,7 @@ int main(int argc, char* argv[]) {
 
 		// Various constants for the network and optimization
 		const uint32_t batch_size = 256 ;  // 1 << 18;
-		const uint32_t n_training_steps = argc >= 4 ? atoi(argv[3]) : 2;
+		const uint32_t n_training_steps = argc >= 4 ? atoi(argv[3]) : 5000;
 		const uint32_t n_input_dims = 2; // 2-D image coordinate
 		const uint32_t n_output_dims = 3; // RGB color
 
