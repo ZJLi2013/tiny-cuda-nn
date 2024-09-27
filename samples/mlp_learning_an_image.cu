@@ -286,13 +286,13 @@ int main(int argc, char* argv[]) {
 					tmp_loss_counter = 0;
 				}
 
-				// if (visualize_learned_func) {
-				// 	network->inference(inference_stream, inference_batch, prediction);
-				// 	auto filename = fmt::format("{}.jpg", i);
-				// 	std::cout << "Writing '" << filename << "'... ";
-				// 	save_image(prediction.data(), sampling_width, sampling_height, 3, n_output_dims, filename);
-				// 	std::cout << "done." << std::endl;
-				// }
+				if (visualize_learned_func) {
+					network->inference(inference_stream, inference_batch, prediction);
+					auto filename = fmt::format("{}.jpg", i);
+					std::cout << "Writing '" << filename << "'... ";
+					save_image(prediction.data(), sampling_width, sampling_height, 3, n_output_dims, filename);
+					std::cout << "done." << std::endl;
+				}
 
 				// Don't count visualizing as part of timing
 				// (assumes visualize_learned_pdf is only true when print_loss is true)
